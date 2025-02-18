@@ -114,7 +114,7 @@ void OnMultLine(int m_ar, int m_br) {
   free(pha);
   free(phb);
   free(phc);
-
+}
 // add code here for block x block matriz multiplication
 void OnMultBlock(int m_ar, int m_br, int bkSize) {}
 
