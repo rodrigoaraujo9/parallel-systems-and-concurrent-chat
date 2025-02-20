@@ -1,0 +1,13 @@
+[package]
+name = "mul-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+num-integer = "0.1"
+
+[workspace]
+resolver = "2"
+
+[workspace.lints.rust]
+warnings = "deny"
