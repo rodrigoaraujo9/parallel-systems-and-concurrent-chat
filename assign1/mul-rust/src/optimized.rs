@@ -47,7 +47,7 @@ pub fn final_mul_line(a: &[f64], b: &[f64]) -> Option<Vec<f64>> {
     Some(res)
 }
 
-pub fn optimized(a: &[f64], b: &[f64]) -> Option<Vec<f64>> {
+pub fn unsafe_mul_line(a: &[f64], b: &[f64]) -> Option<Vec<f64>> {
     if a.len() != b.len() {
         return None;
     }
@@ -85,6 +85,47 @@ pub fn optimized(a: &[f64], b: &[f64]) -> Option<Vec<f64>> {
                 unsafe {
                     *res_row.get_unchecked_mut(j) +=
                         a_val * *b_transposed.get_unchecked(k * side + j);
+                }
+            }
+        }
+    }
+
+    Some(res)
+}
+
+pub fn final_mul_block(a: &[f64], b: &[f64], bk_size: usize) -> Option<Vec<f64>> {
+    if a.len() != b.len() {
+        return None;
+    }
+
+    let length = a.len();
+    let side_f64 = (length as f64).sqrt();
+    if side_f64.fract() != 0.0 {
+        return None;
+    }
+
+    let side = side_f64 as usize;
+    let mut res = vec![0.0; length];
+
+    let mut b_transposed = vec![0.0; length];
+    for i in 0..side {
+        for j in 0..side {
+            b_transposed[j * side + i] = b[i * side + j];
+        }
+    }
+
+    for ii in (0..side).step_by(bk_size) {
+        for jj in (0..side).step_by(bk_size) {
+            for kk in (0..side).step_by(bk_size) {
+                for i in ii..(ii + bk_size).min(side) {
+                    for k in kk..(kk + bk_size).min(side) {
+                        let a_val = a[i * side + k];
+                        let b_row = &b_transposed[k * side..(k + 1) * side];
+                        let res_row = &mut res[i * side..(i + 1) * side];
+                        for j in jj..(jj + bk_size).min(side) {
+                            res_row[j] += a_val * b_row[j];
+                        }
+                    }
                 }
             }
         }

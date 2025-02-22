@@ -57,8 +57,8 @@ fn main() {
             optimized::final_mul_line(&a_flat, &b_flat)
         });
 
-        measure_time("optimized (Optimized)", || {
-            optimized::optimized(&a_flat, &b_flat)
+        measure_time("final_mul_block (Optimized)", || {
+            optimized::final_mul_block(&a_flat, &b_flat, 48)
         });
     }
 }
