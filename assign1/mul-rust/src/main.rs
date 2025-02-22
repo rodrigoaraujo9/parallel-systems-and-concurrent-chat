@@ -1,3 +1,34 @@
+use rand::Rng;
+use std::time::Instant;
+mod optimized;
+
+fn generate_matrix(n: usize) -> Vec<Vec<f64>> {
+    let mut rng = rand::thread_rng();
+    (0..n)
+        .map(|_| (0..n).map(|_| rng.gen_range(-10.0..10.0)).collect())
+        .collect()
+}
+
+fn generate_flat_matrix(n: usize) -> Vec<f64> {
+    let mut rng = rand::thread_rng();
+    (0..n * n).map(|_| rng.gen_range(-10.0..10.0)).collect()
+}
+
+fn measure_time<F>(label: &str, func: F)
+where
+    F: FnOnce() -> Option<Vec<f64>>,
+{
+    let start = Instant::now();
+    let result = func();
+    let duration = start.elapsed();
+
+    if result.is_some() {
+        println!("{} completed in: {:.4?}", label, duration);
+    } else {
+        println!("{} failed!", label);
+    }
+}
+
 // WORKS FOR SQUARE MATRICES
 fn on_mult_line(a: &Vec<Vec<f64>>, b: &Vec<Vec<f64>>) -> Option<Vec<Vec<f64>>> {
     let rows_a = a.len();
@@ -92,77 +123,32 @@ fn on_mult_line_flat_transposed_b(a: &Vec<f64>, b: &Vec<f64>) -> Option<Vec<f64>
 }
 
 fn main() {
-    let matrix_a = vec![
-        vec![1.0, 2.0, 3.0],
-        vec![4.0, 5.0, 6.0],
-        vec![7.0, 8.0, 9.0],
-    ];
+    let sizes = [600, 3000];
 
-    let matrix_b = vec![
-        vec![9.0, 8.0, 7.0],
-        vec![6.0, 5.0, 4.0],
-        vec![3.0, 2.0, 1.0],
-    ];
+    for &size in &sizes {
+        println!("\n=== Matrix Size: {}x{} ===", size, size);
 
-    let a = vec![
-        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
-    ];
+        let a_flat = generate_flat_matrix(size);
+        let b_flat = generate_flat_matrix(size);
+        let a_mat = generate_matrix(size);
+        let b_mat = generate_matrix(size);
 
-    let b = vec![
-        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
+        measure_time("on_mult_line (2D Vec)", || {
+            on_mult_line(&a_mat, &b_mat).map(|m| m.concat())
+        });
 
-    match on_mult_line_flat(&a, &b) {
-        Some(result) => {
-            println!("Matrix multiplication result for flat vector representation:");
-            for i in 0..4 {
-                println!("{:?}", &result[i * 4..(i + 1) * 4]);
-            }
-        }
-        None => println!("Invalid matrix input!"),
+        measure_time("on_mult_line_flat", || on_mult_line_flat(&a_flat, &b_flat));
+
+        measure_time("on_mult_line_flat_transposed_b", || {
+            on_mult_line_flat_transposed_b(&a_flat, &b_flat)
+        });
+
+        measure_time("final_mul_line (Optimized)", || {
+            optimized::final_mul_line(&a_flat, &b_flat)
+        });
+
+        measure_time("optimized (Optimized)", || {
+            optimized::optimized(&a_flat, &b_flat)
+        });
     }
-
-    match on_mult_line_flat_transposed_b(&a, &b) {
-        Some(result) => {
-            println!("Matrix multiplication result for flat vector representation with transposed b for better cache locality:");
-            for i in 0..4 {
-                println!("{:?}", &result[i * 4..(i + 1) * 4]);
-            }
-        }
-        None => println!("Invalid matrix input!"),
-    }
-
-    match on_mult_line(&matrix_a, &matrix_b) {
-        Some(result) => {
-            println!("Matrix Multiplication:");
-            for row in result {
-                println!("{:?}", row);
-            }
-        }
-        None => println!("Error: Matrices have different dimensions."),
-    }
-    /*
-    match sum_matrices(&matrix_a, &matrix_b) {
-        Some(result) => {
-            println!("Matrix Sum:");
-            for row in result {
-                println!("{:?}", row);
-            }
-        }
-        None => println!("Error: Matrices have different dimensions."),
-    }
-    */
-}
-
-impl Solution {
-    fn checkrow(board: Vec<Vec<char>>, index: usize) -> bool {
-        let size = board.len();
-
-        if index > size {
-            return False;
-        }
-
-        True
-    }
-    pub fn is_valid_sudoku(board: Vec<Vec<char>>) -> bool {}
 }

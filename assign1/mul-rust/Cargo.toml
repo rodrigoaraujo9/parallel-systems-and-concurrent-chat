@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 num-integer = "0.1"
+rand = "0.8"
 
 [workspace]
 resolver = "2"

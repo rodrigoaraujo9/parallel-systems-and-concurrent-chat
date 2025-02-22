@@ -1,0 +1,1 @@
+/Users/rodrigoaraujo/Desktop/estudar/CPD/trabalho/g11/assign1/mul-rust/target/release/mul-rust: /Users/rodrigoaraujo/Desktop/estudar/CPD/trabalho/g11/assign1/mul-rust/src/main.rs /Users/rodrigoaraujo/Desktop/estudar/CPD/trabalho/g11/assign1/mul-rust/src/optimized.rs
