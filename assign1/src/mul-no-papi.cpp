@@ -8,7 +8,7 @@
 using namespace std;
 using namespace std::chrono;
 
-#define BKSIZE 128 // Block size for block multiplication
+#define BKSIZE 128
 
 using namespace std;
 
@@ -116,7 +116,7 @@ void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C) {
 int main() {
   srand(time(0));
 
-  int sizes[] = {600, 3000}; // Test different matrix sizes
+  int sizes[] = {600, 3000};
 
   for (int s = 0; s < 2; s++) {
     int size = sizes[s];
@@ -124,7 +124,6 @@ int main() {
     cout << "\nRunning matrix multiplication for size " << size << "x" << size
          << "...\n";
 
-    // Allocate memory only ONCE per size
     double *A =
         static_cast<double *>(aligned_alloc(64, size * size * sizeof(double)));
     double *B =
@@ -135,11 +134,9 @@ int main() {
     generateRandomMatrix(A, size);
     generateRandomMatrix(B, size);
 
-    // ---- Warm-up Computation (Avoid Cold Cache Issues) ----
     cout << "Warming up cache..." << endl;
     OnMultBlockWrapper(size, size, A, B, C);
 
-    // ---- Measure Execution Time More Accurately ----
     auto start = high_resolution_clock::now();
     double timeBlock = measureTime(OnMultBlockWrapper, size, A, B, C);
     auto end = high_resolution_clock::now();
@@ -151,7 +148,6 @@ int main() {
     cout << "Total elapsed time: " << elapsedTime
          << " seconds (including warm-up)" << endl;
 
-    // Free memory after all tests
     free(A);
     free(B);
     free(C);
