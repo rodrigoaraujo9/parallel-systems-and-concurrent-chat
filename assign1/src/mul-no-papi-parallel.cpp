@@ -1,3 +1,5 @@
+#include "mm_malloc.h"
+#include "utils.cpp"
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -9,6 +11,9 @@ using namespace std;
 using namespace chrono;
 
 #define BKSIZE 64
+
+const size_t M2_L1_CACHE_SIZE = 128 * 1024;
+const size_t M2_L2_CACHE_SIZE = 12 * 1024 * 1024;
 
 using namespace std;
 
@@ -71,7 +76,26 @@ void OnMultBlockImproved(int m_ar, int m_br, int bkSize, double *pha,
 
 void OnMultBlockWrapperImproved(int m_ar, int m_br, double *A, double *B,
                                 double *C) {
-  int blockSize = BKSIZE;
+  std::vector<block_utils::CacheInfo> caches;
+  {
+    block_utils::CacheInfo cache1;
+    cache1.name = "M2 L1 Data Cache";
+    cache1.size = M2_L1_CACHE_SIZE;
+    caches.push_back(cache1);
+
+    block_utils::CacheInfo cache2;
+    cache2.name = "M2 L2 Cache";
+    cache2.size = M2_L2_CACHE_SIZE;
+    caches.push_back(cache2);
+  }
+  int blockSize = calcMinOptimalBlockSizeForCaches(caches, 0.8);
+  if (blockSize == -1) {
+    cerr << "Error: Invalid block size computed from cache configurations!"
+         << endl;
+    return;
+  }
+  cout << "Using minimum block size = " << blockSize
+       << " for matrix multiplication.\n";
   OnMultBlockImproved(m_ar, m_br, blockSize, A, B, C);
 }
 
@@ -158,11 +182,6 @@ double measureTime(void (*multiplyFunc)(int, int, double *, double *, double *),
   return total_time / iterations;
 }
 
-void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C) {
-  int blockSize = BKSIZE;
-  OnMultBlockImproved(m_ar, m_br, blockSize, A, B, C);
-}
-
 int main() {
   srand(time(0));
 
@@ -181,9 +200,9 @@ int main() {
     generateRandomMatrix(B, size);
 
     cout << "Warming up cache...\n";
-    OnMultBlockWrapper(size, size, A, B, C);
+    OnMultBlockWrapperImproved(size, size, A, B, C);
 
-    double timeBlock = measureTime(OnMultBlockWrapper, size, A, B, C);
+    double timeBlock = measureTime(OnMultBlockWrapperImproved, size, A, B, C);
 
     cout << "Avg Execution Time (Block Multiplication): " << timeBlock
          << " seconds\n";
