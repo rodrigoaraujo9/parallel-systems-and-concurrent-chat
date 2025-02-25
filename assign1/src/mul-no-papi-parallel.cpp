@@ -12,6 +12,69 @@ using namespace chrono;
 
 using namespace std;
 
+void transposeMatrix(double *matrix, double *transposed, int size,
+                     int blockSize = 32) {
+#pragma omp parallel for
+  for (int i = 0; i < size; i += blockSize) {
+    for (int j = 0; j < size; j += blockSize) {
+      for (int bi = i; bi < min(i + blockSize, size); ++bi) {
+        for (int bj = j; bj < min(j + blockSize, size); ++bj) {
+          transposed[bj * size + bi] = matrix[bi * size + bj];
+        }
+      }
+    }
+  }
+}
+
+void OnMultLineImproved(int m_ar, int m_br, double *pha, double *phb,
+                        double *phc) {
+  memset(phc, 0, m_ar * m_br * sizeof(double));
+
+  vector<double> phbT(m_br * m_br);
+  transposeMatrix(phb, phbT.data(), m_br);
+
+#pragma omp parallel for collapse(2) schedule(dynamic)
+  for (int i = 0; i < m_ar; i++) {
+    for (int j = 0; j < m_br; j++) {
+      double sum = 0.0;
+      for (int k = 0; k < m_ar; k++) {
+        sum += pha[i * m_ar + k] * phbT[j * m_br + k];
+      }
+      phc[i * m_ar + j] = sum;
+    }
+  }
+}
+
+void OnMultBlockImproved(int m_ar, int m_br, int bkSize, double *pha,
+                         double *phb, double *phc) {
+  memset(phc, 0, m_ar * m_br * sizeof(double));
+
+#pragma omp parallel for collapse(2) schedule(dynamic)
+  for (int ii = 0; ii < m_ar; ii += bkSize) {
+    for (int jj = 0; jj < m_br; jj += bkSize) {
+      for (int kk = 0; kk < m_ar; kk += bkSize) {
+        int iMax = min(ii + bkSize, m_ar);
+        int jMax = min(jj + bkSize, m_br);
+        int kMax = min(kk + bkSize, m_ar);
+        for (int i = ii; i < iMax; i++) {
+          for (int k = kk; k < kMax; k++) {
+            double a_val = pha[i * m_ar + k];
+            for (int j = jj; j < jMax; j++) {
+              phc[i * m_ar + j] += a_val * phb[k * m_br + j];
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+void OnMultBlockWrapperImproved(int m_ar, int m_br, double *A, double *B,
+                                double *C) {
+  int blockSize = BKSIZE;
+  OnMultBlockImproved(m_ar, m_br, blockSize, A, B, C);
+}
+
 void generateRandomMatrix(double *matrix, int size) {
   for (int i = 0; i < size * size; i++) {
     matrix[i] = (double)(rand() % 10 + 1);
@@ -26,19 +89,6 @@ void printMatrix(double *matrix, int size) {
     cout << endl;
   }
   cout << "..." << endl;
-}
-
-void transposeMatrix(double *matrix, double *transposed, int size,
-                     int blockSize = 32) {
-  for (int i = 0; i < size; i += blockSize) {
-    for (int j = 0; j < size; j += blockSize) {
-      for (int bi = i; bi < min(i + blockSize, size); ++bi) {
-        for (int bj = j; bj < min(j + blockSize, size); ++bj) {
-          transposed[bj * size + bi] = matrix[bi * size + bj];
-        }
-      }
-    }
-  }
 }
 
 void OnMult(int m_ar, int m_br, double *pha, double *phb, double *phc) {
@@ -60,7 +110,7 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 
   vector<double> phbT(m_br * m_br);
   transposeMatrix(phb, phbT.data(), m_br);
-
+  // #pragma omp parallel for
   for (int i = 0; i < m_ar; i++) {
     for (int k = 0; k < m_ar; k++) {
       double temp = pha[i * m_ar + k];
@@ -74,7 +124,7 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb,
                  double *phc) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
-
+#pragma omp parallel for collapse(2)
   for (int ii = 0; ii < m_ar; ii += bkSize) {
     for (int jj = 0; jj < m_br; jj += bkSize) {
       for (int kk = 0; kk < m_ar; kk += bkSize) {
@@ -94,7 +144,7 @@ void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb,
 
 double measureTime(void (*multiplyFunc)(int, int, double *, double *, double *),
                    int size, double *A, double *B, double *C,
-                   int iterations = 5) {
+                   int iterations = 1) {
   double total_time = 0.0;
 
   for (int i = 0; i < iterations; i++) {
@@ -110,7 +160,7 @@ double measureTime(void (*multiplyFunc)(int, int, double *, double *, double *),
 
 void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C) {
   int blockSize = BKSIZE;
-  OnMultBlock(m_ar, m_br, blockSize, A, B, C);
+  OnMultBlockImproved(m_ar, m_br, blockSize, A, B, C);
 }
 
 int main() {
