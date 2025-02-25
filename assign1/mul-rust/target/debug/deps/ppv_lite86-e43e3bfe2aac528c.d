@@ -1,0 +1,10 @@
+/Users/rodrigoaraujo/Desktop/estudar/CPD/trabalho/g11/assign1/mul-rust/target/debug/deps/libppv_lite86-e43e3bfe2aac528c.rmeta: /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/lib.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/soft.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/types.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/generic.rs
+
+/Users/rodrigoaraujo/Desktop/estudar/CPD/trabalho/g11/assign1/mul-rust/target/debug/deps/libppv_lite86-e43e3bfe2aac528c.rlib: /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/lib.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/soft.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/types.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/generic.rs
+
+/Users/rodrigoaraujo/Desktop/estudar/CPD/trabalho/g11/assign1/mul-rust/target/debug/deps/ppv_lite86-e43e3bfe2aac528c.d: /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/lib.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/soft.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/types.rs /Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/generic.rs
+
+/Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/lib.rs:
+/Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/soft.rs:
+/Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/types.rs:
+/Users/rodrigoaraujo/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ppv-lite86-0.2.20/src/generic.rs:

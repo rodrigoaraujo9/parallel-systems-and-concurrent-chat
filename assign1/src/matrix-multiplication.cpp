@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <papi.h>
 #include <stdio.h>
 #include <time.h>
 
@@ -72,7 +73,6 @@ void OnMultLine(int m_ar, int m_br) {
 
   double *pha, *phb, *phc; // first, second and result matrices
 
-  // number of elements of the matrices
   pha = (double *)malloc((m_ar * m_ar) * sizeof(double));
   phb = (double *)malloc((m_ar * m_ar) * sizeof(double));
   phc = (double *)malloc((m_ar * m_ar) * sizeof(double));
@@ -104,7 +104,7 @@ void OnMultLine(int m_ar, int m_br) {
     for (j = 0; j < m_br; j++) {
       for (k = 0; k < m_ar; k++) {
         // C[i][j] = ∑ A[i][k] x B[k][j]
-        phc[i * m_ar + j] += pha[i * m_ar + k] * phb[k * m_ar + j]; 
+        phc[i * m_ar + j] += pha[i * m_ar + k] * phb[k * m_ar + j];
       }
     }
   }
@@ -134,6 +134,7 @@ void OnMultBlock(int m_ar, int m_br, int bkSize) {
 
   char st[100];
   double temp;
+
   int i, j, k;
   int i2, j2, k2;
 
@@ -185,7 +186,6 @@ void OnMultBlock(int m_ar, int m_br, int bkSize) {
     }
   }
 
-
   Time2 = clock();
   sprintf(st, "Time: %3.3f seconds\n",
           (double)(Time2 - Time1) / CLOCKS_PER_SEC);
@@ -198,8 +198,6 @@ void OnMultBlock(int m_ar, int m_br, int bkSize) {
       cout << phc[j] << " ";
   }
   cout << endl;
-
-
   free(pha);
   free(phb);
   free(phc);
