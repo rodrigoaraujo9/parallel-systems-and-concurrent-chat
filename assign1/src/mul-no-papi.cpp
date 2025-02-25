@@ -4,6 +4,7 @@
 #include <ctime>
 #include <iostream>
 #include <vector>
+#include <functional>
 
 using namespace std;
 using namespace chrono;
@@ -28,8 +29,7 @@ void printMatrix(double *matrix, int size) {
   cout << "..." << endl;
 }
 
-void transposeMatrix(double *matrix, double *transposed, int size,
-                     int blockSize = 32) {
+void transposeMatrix(double *matrix, double *transposed, int size, int blockSize = 32) {
   for (int i = 0; i < size; i += blockSize) {
     for (int j = 0; j < size; j += blockSize) {
       for (int bi = i; bi < min(i + blockSize, size); ++bi) {
@@ -71,8 +71,7 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
   }
 }
 
-void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb,
-                 double *phc) {
+void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb, double *phc) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
 
   for (int ii = 0; ii < m_ar; ii += bkSize) {
@@ -92,56 +91,92 @@ void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb,
   }
 }
 
-double measureTime(void (*multiplyFunc)(int, int, double *, double *, double *),
-                   int size, double *A, double *B, double *C,
-                   int iterations = 5) {
-  double total_time = 0.0;
-
-  for (int i = 0; i < iterations; i++) {
+double measureTime(std::function<void(int, int, double *, double *, double *)> multiplyFunc, int size, double *A, double *B, double *C) {
     auto start = high_resolution_clock::now();
     multiplyFunc(size, size, A, B, C);
     auto end = high_resolution_clock::now();
-
-    total_time += duration<double>(end - start).count();
-  }
-
-  return total_time / iterations;
+    return duration<double>(end-start).count();
 }
 
-void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C) {
-  int blockSize = BKSIZE;
+void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C, int blockSize) {
   OnMultBlock(m_ar, m_br, blockSize, A, B, C);
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+
+  if (argc < 3) {
+    cout << "Usage ./mul <algorithm> <matrix_size> [block_size]\n";
+    return 1;
+  }
+
+  int algorithm = atoi(argv[1]);
+  int matrix_size = atoi(argv[2]);
+  int block_size = 0;
+
+  if (algorithm == 3) {
+    if (argc != 4) {
+      cout << "Usage: ./mul 3 <matrix_size> <block_size>\n";
+      return 1;
+    }
+    block_size = atoi(argv[3]);
+    if (block_size <= 0) {
+      cout << "Invalid block size.\n";
+      return 1;
+    }
+  } else {
+    if (argc == 4) {
+      cout << "Usage: ./mul <algorithm> <matrix_size>\n";
+      return 1;
+    }
+  }
+
+  if (algorithm < 1 || algorithm > 3) {
+    cout << "Invalid algorithm.\n";
+    return 1;
+  } 
+
+  if (matrix_size < 600) {
+    cout << "Matrix too small. Minimum: 600x600\n";
+    return 1;
+  }
+
   srand(time(0));
 
-  int sizes[] = {600, 1000, 1400, 1800, 2200, 2600, 3000};
+  double *A, *B, *C;
+  if (posix_memalign((void **)&A, 64, matrix_size * matrix_size * sizeof(double)) != 0 || 
+      posix_memalign((void **)&B, 64, matrix_size * matrix_size * sizeof(double)) != 0 ||
+      posix_memalign((void **)&C, 64, matrix_size * matrix_size * sizeof(double)) != 0) {
+    cout << "Memory allocation failed.\n";
+    return 1;
+  }
 
-  for (int size : sizes) {
-    cout << "\nRunning matrix multiplication for size " << size << "x" << size
-         << "...\n";
+  generateRandomMatrix(A, matrix_size);
+  generateRandomMatrix(B, matrix_size);
 
-    double *A, *B, *C;
-    posix_memalign((void **)&A, 64, size * size * sizeof(double));
-    posix_memalign((void **)&B, 64, size * size * sizeof(double));
-    posix_memalign((void **)&C, 64, size * size * sizeof(double));
+  double execution_time = 0.0;
 
-    generateRandomMatrix(A, size);
-    generateRandomMatrix(B, size);
-
-    cout << "Warming up cache...\n";
-    OnMultBlockWrapper(size, size, A, B, C);
-
-    double timeBlock = measureTime(OnMultBlockWrapper, size, A, B, C);
-
-    cout << "Avg Execution Time (Block Multiplication): " << timeBlock
-         << " seconds\n";
+  switch(algorithm) {
+    case 1:
+      execution_time = measureTime(OnMult, matrix_size, A, B, C);
+      cout << "Execution Time (Plain Matrix Multiplication): " << execution_time << " seconds\n";
+      break;
+    
+    case 2:
+      execution_time = measureTime(OnMultLine, matrix_size, A, B, C);
+      cout << "Execution Time (Line-by-Line Matrix Multiplication): " << execution_time << " seconds\n";
+      break;
+      
+    case 3:
+      execution_time = measureTime([block_size](int s, int, double *a, double *b, double *c) { 
+        OnMultBlockWrapper(s, s, a, b, c, block_size); }, matrix_size, A, B, C);
+      cout << "Execution Time (Block Multiplication and Block Size = " << block_size << "): " << execution_time << " seconds\n";
+      break;
+  }
 
     free(A);
     free(B);
     free(C);
-  }
 
   return 0;
+
 }
