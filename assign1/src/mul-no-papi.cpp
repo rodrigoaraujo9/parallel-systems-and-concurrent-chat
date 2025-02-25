@@ -6,6 +6,7 @@
 #include <vector>
 #include <functional>
 #include <fstream>
+#include <algorithm>
 
 using namespace std;
 using namespace chrono;
@@ -15,7 +16,7 @@ using namespace chrono;
 
 using namespace std;
 
-void CSVfile(const string &filename, double execution_time, bool firstEntry) {
+void writeToCSVfile(const string &filename, double execution_time, bool firstEntry, bool median = false) {
   ofstream file;
   file.open(filename, ios::app);
 
@@ -28,7 +29,11 @@ void CSVfile(const string &filename, double execution_time, bool firstEntry) {
     file << "Time\n";
   }
 
-  file << execution_time << "\n";
+  if (median) {
+    file << "Median," << execution_time << "\n";
+  } else {
+    file << execution_time << "\n";
+  }
   file.close();
 }
 
@@ -117,6 +122,20 @@ double measureTime(std::function<void(int, int, double *, double *, double *)> m
     return duration<double>(end-start).count();
 }
 
+double getMedian(vector<double> &times) {
+  sort(times.begin(), times.end());
+  int len = times.size();
+
+  double median;
+  if (len % 2 == 0) {
+    median = (times[len/2-1] + times[len/2]) / 2.0;
+  } else {
+    median = times[len/2];
+  }
+
+  return median;
+}
+
 void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C, int blockSize) {
   OnMultBlock(m_ar, m_br, blockSize, A, B, C);
 }
@@ -175,6 +194,7 @@ int main(int argc, char *argv[]) {
   string filename = "time.csv";
   bool firstEntry = true;
 
+  vector<double>execution_times;
   int iteration = 1;
   while (iteration <= ITERATIONS) {
 
@@ -195,10 +215,14 @@ int main(int argc, char *argv[]) {
         cout << "Execution Time (Block Multiplication and Block Size = " << block_size << "): " << execution_time << " seconds\n";
         break;
     }
-    CSVfile(filename, execution_time, firstEntry);
+    execution_times.push_back(execution_time);
+    writeToCSVfile(filename, execution_time, firstEntry);
     firstEntry = false;
     iteration++;
   }
+
+  double median = getMedian(execution_times);
+  writeToCSVfile(filename, median, false, true);
 
   free(A);
   free(B);
