@@ -5,13 +5,32 @@
 #include <iostream>
 #include <vector>
 #include <functional>
+#include <fstream>
 
 using namespace std;
 using namespace chrono;
 
 #define BKSIZE 64
+#define ITERATIONS 10
 
 using namespace std;
+
+void CSVfile(const string &filename, double execution_time, bool firstEntry) {
+  ofstream file;
+  file.open(filename, ios::app);
+
+  if (!file.is_open()) {
+    cout << "Error opening CSV file.\n";
+    return;
+  }
+
+  if (firstEntry) {
+    file << "Time\n";
+  }
+
+  file << execution_time << "\n";
+  file.close();
+}
 
 void generateRandomMatrix(double *matrix, int size) {
   for (int i = 0; i < size * size; i++) {
@@ -153,29 +172,37 @@ int main(int argc, char *argv[]) {
   generateRandomMatrix(A, matrix_size);
   generateRandomMatrix(B, matrix_size);
 
-  double execution_time = 0.0;
+  string filename = "time.csv";
+  bool firstEntry = true;
 
-  switch(algorithm) {
-    case 1:
-      execution_time = measureTime(OnMult, matrix_size, A, B, C);
-      cout << "Execution Time (Plain Matrix Multiplication): " << execution_time << " seconds\n";
-      break;
-    
-    case 2:
-      execution_time = measureTime(OnMultLine, matrix_size, A, B, C);
-      cout << "Execution Time (Line-by-Line Matrix Multiplication): " << execution_time << " seconds\n";
-      break;
+  int iteration = 1;
+  while (iteration <= ITERATIONS) {
+
+    double execution_time = 0.0;
+
+    switch(algorithm) {
+      case 1:
+        execution_time = measureTime(OnMult, matrix_size, A, B, C);
+        break;
       
-    case 3:
-      execution_time = measureTime([block_size](int s, int, double *a, double *b, double *c) { 
-        OnMultBlockWrapper(s, s, a, b, c, block_size); }, matrix_size, A, B, C);
-      cout << "Execution Time (Block Multiplication and Block Size = " << block_size << "): " << execution_time << " seconds\n";
-      break;
+      case 2:
+        execution_time = measureTime(OnMultLine, matrix_size, A, B, C);
+        break;
+        
+      case 3:
+        execution_time = measureTime([block_size](int s, int, double *a, double *b, double *c) { 
+          OnMultBlockWrapper(s, s, a, b, c, block_size); }, matrix_size, A, B, C);
+        cout << "Execution Time (Block Multiplication and Block Size = " << block_size << "): " << execution_time << " seconds\n";
+        break;
+    }
+    CSVfile(filename, execution_time, firstEntry);
+    firstEntry = false;
+    iteration++;
   }
 
-    free(A);
-    free(B);
-    free(C);
+  free(A);
+  free(B);
+  free(C);
 
   return 0;
 
