@@ -2,6 +2,7 @@ use rand::Rng;
 use std::time::Instant;
 mod naive_approach;
 mod optimized;
+mod parallel;
 
 fn generate_matrix(n: usize) -> Vec<Vec<f64>> {
     let mut rng = rand::thread_rng();
@@ -31,7 +32,10 @@ where
 }
 
 fn main() {
-    let sizes = [600, 3000];
+    let mut sizes: Vec<usize> = Vec::new();
+    for i in (600..3001).step_by(400) {
+        sizes.push(i);
+    }
 
     for &size in &sizes {
         println!("\n=== Matrix Size: {}x{} ===", size, size);
@@ -49,16 +53,19 @@ fn main() {
             naive_approach::on_mult_line_flat(&a_flat, &b_flat)
         });
 
-        measure_time("on_mult_line_flat_transposed_b", || {
-            naive_approach::on_mult_line_flat_transposed_b(&a_flat, &b_flat)
-        });
-
         measure_time("final_mul_line (Optimized)", || {
             optimized::final_mul_line(&a_flat, &b_flat)
         });
 
         measure_time("final_mul_block (Optimized)", || {
             optimized::final_mul_block(&a_flat, &b_flat, 48)
+        });
+
+        measure_time("parallel line", || {
+            parallel::final_mul_line_parallel(&a_flat, &b_flat)
+        });
+        measure_time("parallel block", || {
+            parallel::parallel_mul_block(&a_flat, &b_flat, 128)
         });
     }
 }
