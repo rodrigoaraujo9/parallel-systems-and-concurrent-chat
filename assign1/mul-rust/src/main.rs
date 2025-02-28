@@ -58,7 +58,7 @@ fn main() {
         });
 
         measure_time("final_mul_block (Optimized)", || {
-            optimized::final_mul_block(&a_flat, &b_flat, 48)
+            optimized::final_mul_block(&a_flat, &b_flat, 96)
         });
 
         measure_time("parallel line", || {
