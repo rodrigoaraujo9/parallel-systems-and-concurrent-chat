@@ -13,11 +13,13 @@ using namespace std;
 using namespace chrono;
 
 #define BKSIZE 64
-#define ITERATIONS 10
+#define ITERATIONS 5
 
 using namespace std;
 
-void writeToCSVfile(const string &filename, int matrix_size, double execution_time, bool firstEntry, bool median = false, bool avgTime = false) {
+// WRITE TO CSV FILE
+
+void writeToCSVfile(const string &filename, int matrix_size, double execution_time, bool firstEntry, bool median = false, bool avgTime = false, int iteration = -1) {
   ofstream file;
   file.open(filename, ios::app);
 
@@ -27,16 +29,22 @@ void writeToCSVfile(const string &filename, int matrix_size, double execution_ti
   }
 
   if (firstEntry) {
-    file << "Size,Time\n";
+    file << "Matrix Size: " << matrix_size << "\n";
+    file << "Iteration,Time\n";
   }
 
-  if (median) {
-    file << matrix_size << ",Median," << execution_time << "\n";
+  if (iteration != -1) {
+    file << iteration << ", " << execution_time << "\n";
+  } else if (median) {
+    file << "Median," << execution_time << "\n";
   } else if (avgTime) {
-    file << matrix_size << ",Average Time," << execution_time << "\n";
+    file << "Average Time," << execution_time << "\n\n";
   }
+
   file.close();
 }
+
+// MATRICES
 
 void generateRandomMatrix(double *matrix, int size) {
   for (int i = 0; i < size * size; i++) {
@@ -44,27 +52,17 @@ void generateRandomMatrix(double *matrix, int size) {
   }
 }
 
-void printMatrix(double *matrix, int size) {
-  for (int i = 0; i < min(size, 10); i++) {
-    for (int j = 0; j < min(size, 10); j++) {
-      cout << matrix[i * size + j] << " ";
-    }
-    cout << endl;
+bool matrixMemoryAllocation(double *&A, double *&B, double *&C, int size) {
+  if (posix_memalign((void **)&A, 64, size * size * sizeof(double)) != 0 ||
+      posix_memalign((void **)&B, 64, size * size * sizeof(double)) != 0 ||
+      posix_memalign((void **)&C, 64, size * size * sizeof(double)) != 0) {
+      cout << "Memory allocation failed.\n";
+      return false;
   }
-  cout << "..." << endl;
+  return true;
 }
 
-void transposeMatrix(double *matrix, double *transposed, int size, int blockSize = 32) {
-  for (int i = 0; i < size; i += blockSize) {
-    for (int j = 0; j < size; j += blockSize) {
-      for (int bi = i; bi < min(i + blockSize, size); ++bi) {
-        for (int bj = j; bj < min(j + blockSize, size); ++bj) {
-          transposed[bj * size + bi] = matrix[bi * size + bj];
-        }
-      }
-    }
-  }
-}
+// SIMPLE MATRIX MULTIPLICATION
 
 void OnMult(int m_ar, int m_br, double *pha, double *phb, double *phc) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
@@ -76,6 +74,21 @@ void OnMult(int m_ar, int m_br, double *pha, double *phb, double *phc) {
         sum += pha[i * m_ar + k] * phb[k * m_br + j];
       }
       phc[i * m_ar + j] = sum;
+    }
+  }
+}
+
+
+// LINE-BY-LINE MATRIX MULTIPLICATION
+
+void transposeMatrix(double *matrix, double *transposed, int size, int blockSize = 32) {
+  for (int i = 0; i < size; i += blockSize) {
+    for (int j = 0; j < size; j += blockSize) {
+      for (int bi = i; bi < min(i + blockSize, size); ++bi) {
+        for (int bj = j; bj < min(j + blockSize, size); ++bj) {
+          transposed[bj * size + bi] = matrix[bi * size + bj];
+        }
+      }
     }
   }
 }
@@ -96,6 +109,9 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
   }
 }
 
+
+// BLOCK MATRIX MULTIPLICATION
+
 void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb, double *phc) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
 
@@ -115,6 +131,13 @@ void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb, doubl
     }
   }
 }
+
+void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C, int blockSize) {
+  OnMultBlock(m_ar, m_br, blockSize, A, B, C);
+}
+
+
+// CALCULATE METRICS
 
 double measureTime(std::function<void(int, int, double *, double *, double *)> multiplyFunc, int size, double *A, double *B, double *C) {
     auto start = high_resolution_clock::now();
@@ -142,42 +165,42 @@ double calculateAvgTime(vector<double> &times) {
     return avgTime;
 }
 
+// EXECUTE MULTIPLICATION
 
-void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C, int blockSize) {
-  OnMultBlock(m_ar, m_br, blockSize, A, B, C);
-}
-
-
-void executeMultiplication(int algorithm, string filename, bool &firstEntry) {
+void executeMultiplication(int algorithm, const string &filename) {
     for (int matrix_size = 600; matrix_size <= 3000; matrix_size += 400) {
+
         double *A, *B, *C;
-        if (posix_memalign((void **)&A, 64, matrix_size * matrix_size * sizeof(double)) != 0 || 
-            posix_memalign((void **)&B, 64, matrix_size * matrix_size * sizeof(double)) != 0 ||
-            posix_memalign((void **)&C, 64, matrix_size * matrix_size * sizeof(double)) != 0) {
-            cout << "Memory allocation failed.\n";
-            return;
-        }
+        if (!matrixMemoryAllocation(A, B, C, matrix_size)) return;
 
         generateRandomMatrix(A, matrix_size);
         generateRandomMatrix(B, matrix_size);
 
         vector<double>execution_times;
         int iteration = 1;
+        bool firstEntry = true;
 
         while(iteration <= ITERATIONS) {
             double execution_time = 0.0;
-            if (algorithm == 1) {
+            switch(algorithm) {
+              case 1: 
                 execution_time = measureTime(OnMult, matrix_size, A, B, C);
+                break;
+              case 2:
+                execution_time = measureTime(OnMultLine, matrix_size, A, B, C);
+                break;
+              case 3:
+                cout << "Not implemented for 3.\n";
             }
             execution_times.push_back(execution_time);
-            writeToCSVfile(filename, matrix_size, execution_time, firstEntry);
+            writeToCSVfile(filename, matrix_size, execution_time, firstEntry, false, false, iteration);
             firstEntry = false;
             iteration++;
-        
         }
 
         double median = calculateMedian(execution_times);
         double avgTime = calculateAvgTime(execution_times);
+
         writeToCSVfile(filename, matrix_size, median, false, true, false);
         writeToCSVfile(filename, matrix_size, avgTime, false, false, true);
 
@@ -188,7 +211,6 @@ void executeMultiplication(int algorithm, string filename, bool &firstEntry) {
 }
 
 
-
 int main(int argc, char *argv[]) {
 
   if (argc < 1) {
@@ -197,21 +219,14 @@ int main(int argc, char *argv[]) {
   }
 
   int algorithm = atoi(argv[1]);
-
   if (algorithm < 1 || algorithm > 3) {
     cout << "Invalid algorithm.\n";
     return 1;
   }
 
   srand(time(0));
-  string filename = "time.csv";
-  bool firstEntry = true;
+  string filename = "time_algorithm_" + to_string(algorithm) + ".csv";
 
-  if (algorithm == 1) {
-    executeMultiplication(1, filename, firstEntry);
-  } else {
-    cout << "Not implemented for algorithm 2 or 3." << endl;
-  }
-
+  executeMultiplication(algorithm, filename);
   return 0;
 }
