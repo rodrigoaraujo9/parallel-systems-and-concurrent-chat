@@ -168,46 +168,48 @@ double calculateAvgTime(vector<double> &times) {
 // EXECUTE MULTIPLICATION
 
 void executeMultiplication(int algorithm, const string &filename) {
-    for (int matrix_size = 600; matrix_size <= 3000; matrix_size += 400) {
+  vector<int> matrix_sizes = {600, 1000, 1400, 1800, 2200, 2600, 3000};
 
-        double *A, *B, *C;
-        if (!matrixMemoryAllocation(A, B, C, matrix_size)) return;
+  if (algorithm == 2) 
+    matrix_sizes.insert(matrix_sizes.end(), {4096, 6144, 8192, 10240});
+  
+  for (int matrix_size : matrix_sizes) {
+    double *A, *B, *C;
+    if (!matrixMemoryAllocation(A, B, C, matrix_size)) return;
 
-        generateRandomMatrix(A, matrix_size);
-        generateRandomMatrix(B, matrix_size);
+    generateRandomMatrix(A, matrix_size);
+    generateRandomMatrix(B, matrix_size);
 
-        vector<double>execution_times;
-        int iteration = 1;
-        bool firstEntry = true;
+    vector<double>execution_times;
+    bool firstEntry = true;
 
-        while(iteration <= ITERATIONS) {
-            double execution_time = 0.0;
-            switch(algorithm) {
-              case 1: 
-                execution_time = measureTime(OnMult, matrix_size, A, B, C);
-                break;
-              case 2:
-                execution_time = measureTime(OnMultLine, matrix_size, A, B, C);
-                break;
-              case 3:
-                cout << "Not implemented for 3.\n";
-            }
-            execution_times.push_back(execution_time);
-            writeToCSVfile(filename, matrix_size, execution_time, firstEntry, false, false, iteration);
-            firstEntry = false;
-            iteration++;
+    for (int iteration = 1; iteration <= ITERATIONS; iteration++) {
+        double execution_time = 0.0;
+        switch(algorithm) {
+          case 1: 
+            execution_time = measureTime(OnMult, matrix_size, A, B, C);
+            break;
+          case 2:
+            execution_time = measureTime(OnMultLine, matrix_size, A, B, C);
+            break;
+          case 3:
+            cout << "Not implemented for 3.\n";
         }
-
-        double median = calculateMedian(execution_times);
-        double avgTime = calculateAvgTime(execution_times);
-
-        writeToCSVfile(filename, matrix_size, median, false, true, false);
-        writeToCSVfile(filename, matrix_size, avgTime, false, false, true);
-
-        free(A);
-        free(B);
-        free(C);
+        execution_times.push_back(execution_time);
+        writeToCSVfile(filename, matrix_size, execution_time, firstEntry, false, false, iteration);
+        firstEntry = false;
     }
+
+    double median = calculateMedian(execution_times);
+    double avgTime = calculateAvgTime(execution_times);
+
+    writeToCSVfile(filename, matrix_size, median, false, true, false);
+    writeToCSVfile(filename, matrix_size, avgTime, false, false, true);
+
+    free(A);
+    free(B);
+    free(C);
+  }
 }
 
 
