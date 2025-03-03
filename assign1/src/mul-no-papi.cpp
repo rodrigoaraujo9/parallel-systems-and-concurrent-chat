@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <vector>
 
@@ -140,7 +141,18 @@ void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C) {
 int main() {
   srand(time(0));
 
+  // Array of matrix sizes to test.
   int sizes[] = {600, 1000, 1400, 1800, 2200, 2600, 3000};
+
+  // Open CSV file for writing.
+  ofstream csvFile("results.csv");
+  if (!csvFile.is_open()) {
+    cerr << "Error opening CSV file for writing." << endl;
+    return 1;
+  }
+  // Write CSV header.
+  csvFile << "Matrix Size,Avg Execution Time (s)"
+          << "\n";
 
   for (int size : sizes) {
     cout << "\nRunning matrix multiplication for size " << size << "x" << size
@@ -162,10 +174,15 @@ int main() {
     cout << "Avg Execution Time (Block Multiplication): " << timeBlock
          << " seconds\n";
 
+    // Write the size and execution time to the CSV.
+    csvFile << size << "," << timeBlock << "\n";
+
     free(A);
     free(B);
     free(C);
   }
 
+  csvFile.close();
+  cout << "Results written to results.csv" << endl;
   return 0;
 }
