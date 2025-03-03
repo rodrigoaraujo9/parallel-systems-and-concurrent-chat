@@ -1,0 +1,43 @@
+matrix_size,method,duration_secs
+600,on_mult_line (2D Vec),0.162652708
+600,on_mult_line_flat,0.031967
+600,final_mul_line (Optimized),0.031679417
+600,final_mul_block (Optimized),0.028324625
+600,parallel line,0.009521959
+600,parallel block,0.011140042
+1000,on_mult_line (2D Vec),0.723146625
+1000,on_mult_line_flat,0.149515167
+1000,final_mul_line (Optimized),0.148106375
+1000,final_mul_block (Optimized),0.124658541
+1000,parallel line,0.039445791
+1000,parallel block,0.061325708
+1400,on_mult_line (2D Vec),1.9630983340000001
+1400,on_mult_line_flat,0.409346625
+1400,final_mul_line (Optimized),0.40066275
+1400,final_mul_block (Optimized),0.338177459
+1400,parallel line,0.110074584
+1400,parallel block,0.200218292
+1800,on_mult_line (2D Vec),4.0098215
+1800,on_mult_line_flat,0.897028083
+1800,final_mul_line (Optimized),0.867024458
+1800,final_mul_block (Optimized),0.742528916
+1800,parallel line,0.298329583
+1800,parallel block,0.764902458
+2200,on_mult_line (2D Vec),7.226695041
+2200,on_mult_line_flat,1.5944936250000001
+2200,final_mul_line (Optimized),1.6128890839999999
+2200,final_mul_block (Optimized),1.387778
+2200,parallel line,0.593492333
+2200,parallel block,1.862187542
+2600,on_mult_line (2D Vec),11.905280291
+2600,on_mult_line_flat,2.663681458
+2600,final_mul_line (Optimized),2.660609417
+2600,final_mul_block (Optimized),2.311080333
+2600,parallel line,1.069860458
+2600,parallel block,3.674562542
+3000,on_mult_line (2D Vec),18.587681458
+3000,on_mult_line_flat,4.0498425
+3000,final_mul_line (Optimized),3.953948167
+3000,final_mul_block (Optimized),3.530593
+3000,parallel line,1.901719833
+3000,parallel block,5.862337209

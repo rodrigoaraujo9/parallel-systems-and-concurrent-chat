@@ -1,5 +1,8 @@
 use rand::Rng;
-use std::time::Instant;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::time::{Duration, Instant};
+
 mod naive_approach;
 mod optimized;
 mod parallel;
@@ -16,7 +19,14 @@ fn generate_flat_matrix(n: usize) -> Vec<f64> {
     (0..n * n).map(|_| rng.gen_range(-10.0..10.0)).collect()
 }
 
-fn measure_time<F>(label: &str, func: F)
+struct ResultRow {
+    matrix_size: usize,
+    method: String,
+    duration_secs: Option<f64>,
+}
+
+// This function now returns the elapsed time as an Option<Duration>
+fn measure_time<F>(label: &str, func: F) -> Option<Duration>
 where
     F: FnOnce() -> Option<Vec<f64>>,
 {
@@ -26,8 +36,10 @@ where
 
     if result.is_some() {
         println!("{} completed in: {:.4?}", label, duration);
+        Some(duration)
     } else {
         println!("{} failed!", label);
+        None
     }
 }
 
@@ -37,6 +49,9 @@ fn main() {
         sizes.push(i);
     }
 
+    // Store results here
+    let mut results: Vec<ResultRow> = Vec::new();
+
     for &size in &sizes {
         println!("\n=== Matrix Size: {}x{} ===", size, size);
 
@@ -45,27 +60,120 @@ fn main() {
         let a_mat = generate_matrix(size);
         let b_mat = generate_matrix(size);
 
-        measure_time("on_mult_line (2D Vec)", || {
+        if let Some(duration) = measure_time("on_mult_line (2D Vec)", || {
             naive_approach::on_mult_line(&a_mat, &b_mat).map(|m| m.concat())
-        });
+        }) {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "on_mult_line (2D Vec)".to_string(),
+                duration_secs: Some(duration.as_secs_f64()),
+            });
+        } else {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "on_mult_line (2D Vec)".to_string(),
+                duration_secs: None,
+            });
+        }
 
-        measure_time("on_mult_line_flat", || {
+        if let Some(duration) = measure_time("on_mult_line_flat", || {
             naive_approach::on_mult_line_flat(&a_flat, &b_flat)
-        });
+        }) {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "on_mult_line_flat".to_string(),
+                duration_secs: Some(duration.as_secs_f64()),
+            });
+        } else {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "on_mult_line_flat".to_string(),
+                duration_secs: None,
+            });
+        }
 
-        measure_time("final_mul_line (Optimized)", || {
+        if let Some(duration) = measure_time("final_mul_line (Optimized)", || {
             optimized::final_mul_line(&a_flat, &b_flat)
-        });
+        }) {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "final_mul_line (Optimized)".to_string(),
+                duration_secs: Some(duration.as_secs_f64()),
+            });
+        } else {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "final_mul_line (Optimized)".to_string(),
+                duration_secs: None,
+            });
+        }
 
-        measure_time("final_mul_block (Optimized)", || {
+        if let Some(duration) = measure_time("final_mul_block (Optimized)", || {
             optimized::final_mul_block(&a_flat, &b_flat, 96)
-        });
+        }) {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "final_mul_block (Optimized)".to_string(),
+                duration_secs: Some(duration.as_secs_f64()),
+            });
+        } else {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "final_mul_block (Optimized)".to_string(),
+                duration_secs: None,
+            });
+        }
 
-        measure_time("parallel line", || {
+        if let Some(duration) = measure_time("parallel line", || {
             parallel::final_mul_line_parallel(&a_flat, &b_flat)
-        });
-        measure_time("parallel block", || {
+        }) {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "parallel line".to_string(),
+                duration_secs: Some(duration.as_secs_f64()),
+            });
+        } else {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "parallel line".to_string(),
+                duration_secs: None,
+            });
+        }
+
+        if let Some(duration) = measure_time("parallel block", || {
             parallel::parallel_mul_block(&a_flat, &b_flat, 128)
-        });
+        }) {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "parallel block".to_string(),
+                duration_secs: Some(duration.as_secs_f64()),
+            });
+        } else {
+            results.push(ResultRow {
+                matrix_size: size,
+                method: "parallel block".to_string(),
+                duration_secs: None,
+            });
+        }
     }
+
+    // Write results to CSV file "results_rust.csv"
+    let file = File::create("results_rust.csv").expect("Unable to create file");
+    let mut writer = BufWriter::new(file);
+    // Write CSV header
+    writeln!(writer, "matrix_size,method,duration_secs").expect("Unable to write header");
+    // Write each row
+    for row in results {
+        let duration_str = row
+            .duration_secs
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "failed".to_string());
+        writeln!(
+            writer,
+            "{},{},{}",
+            row.matrix_size, row.method, duration_str
+        )
+        .expect("Unable to write row");
+    }
+    println!("Results saved to results_rust.csv");
 }
