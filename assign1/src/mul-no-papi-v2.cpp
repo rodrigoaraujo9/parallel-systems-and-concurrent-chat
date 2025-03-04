@@ -8,6 +8,7 @@
 #include <fstream>
 #include <numeric>
 #include <algorithm>
+#include <papi.h>
 
 using namespace std;
 using namespace chrono;
@@ -19,7 +20,7 @@ using namespace std;
 
 // WRITE TO CSV FILE
 
-void writeToCSVfile(const string &filename, int matrix_size, double execution_time, bool firstEntry, bool median = false, bool avgTime = false, int iteration = -1) {
+void writeToCSVfile(const string &filename, int matrix_size, double execution_time, long long l1_misses, long long l2_misses, bool firstEntry, bool median = false, bool avgTime = false, int iteration = -1) {
   ofstream file;
   file.open(filename, ios::app);
 
@@ -29,21 +30,19 @@ void writeToCSVfile(const string &filename, int matrix_size, double execution_ti
   }
 
   if (firstEntry) {
-    file << "Matrix Size: " << matrix_size << "\n";
-    file << "Iteration,Time\n";
+    file << "Matrix Size,Iteration,Time,L1 Misses,L2 Misses\n";
   }
 
   if (iteration != -1) {
-    file << iteration << ", " << execution_time << "\n";
+    file << matrix_size << "," << iteration << "," << execution_time << "," << l1_misses << "," << l2_misses << "\n";
   } else if (median) {
-    file << "Median," << execution_time << "\n";
+    file << matrix_size << ",Median," << execution_time << ",,\n";
   } else if (avgTime) {
-    file << "Average Time," << execution_time << "\n\n";
+    file << matrix_size << ",Average Time," << execution_time << ",,\n";
   }
 
   file.close();
 }
-
 // MATRICES
 
 void generateRandomMatrix(double *matrix, int size) {
@@ -165,14 +164,34 @@ double calculateAvgTime(vector<double> &times) {
     return avgTime;
 }
 
-// EXECUTE MULTIPLICATION
+// PAPI INITIALIZATION
+void initPAPI() {
+    int retval = PAPI_library_init(PAPI_VER_CURRENT);
+    if (retval != PAPI_VER_CURRENT) {
+        cerr << "Erro ao iniciar PAPI: " << PAPI_strerror(retval) 
+             << " (Error Code: " << retval << ")" << endl;
+        cerr << "Check if PAPI is installed correctly and linked during compilation.\n";
+        exit(1);
+    }
+
+    // Initialize thread support
+    retval = PAPI_thread_init((unsigned long (*)(void))pthread_self);
+    if (retval != PAPI_OK) {
+        cerr << "PAPI_thread_init failed: " << PAPI_strerror(retval) << endl;
+        exit(1);
+    }
+}
+
+
+
+// EXECUTE MULTIPLICATION WITH PAPI METRICS
 
 void executeMultiplication(int algorithm, const string &filename) {
   vector<int> matrix_sizes = {600, 1000, 1400, 1800, 2200, 2600, 3000};
 
   if (algorithm == 2) 
     matrix_sizes.insert(matrix_sizes.end(), {4096, 6144, 8192, 10240});
-  
+
   for (int matrix_size : matrix_sizes) {
     double *A, *B, *C;
     if (!matrixMemoryAllocation(A, B, C, matrix_size)) return;
@@ -180,10 +199,20 @@ void executeMultiplication(int algorithm, const string &filename) {
     generateRandomMatrix(A, matrix_size);
     generateRandomMatrix(B, matrix_size);
 
-    vector<double>execution_times;
+    vector<double> execution_times;
     bool firstEntry = true;
 
+    int EventSet = PAPI_NULL;
+    long long values[2];
+
+    PAPI_create_eventset(&EventSet);
+    PAPI_add_event(EventSet, PAPI_L1_DCM);
+    PAPI_add_event(EventSet, PAPI_L2_DCM);
+
     for (int iteration = 1; iteration <= ITERATIONS; iteration++) {
+        PAPI_start(EventSet);
+        auto start = high_resolution_clock::now();
+
         double execution_time = 0.0;
         switch(algorithm) {
           case 1: 
@@ -195,23 +224,26 @@ void executeMultiplication(int algorithm, const string &filename) {
           case 3:
             cout << "Not implemented for 3.\n";
         }
+        auto end = high_resolution_clock::now();
+        execution_time = duration<double>(end - start).count();
+        PAPI_stop(EventSet, values);
+
         execution_times.push_back(execution_time);
-        writeToCSVfile(filename, matrix_size, execution_time, firstEntry, false, false, iteration);
+        writeToCSVfile(filename, matrix_size, execution_time, values[0], values[1], firstEntry, false, false, iteration);
         firstEntry = false;
     }
 
     double median = calculateMedian(execution_times);
     double avgTime = calculateAvgTime(execution_times);
 
-    writeToCSVfile(filename, matrix_size, median, false, true, false);
-    writeToCSVfile(filename, matrix_size, avgTime, false, false, true);
+    writeToCSVfile(filename, matrix_size, median, 0, 0, false, true, false);
+    writeToCSVfile(filename, matrix_size, avgTime, 0, 0, false, false, true);
 
     free(A);
     free(B);
     free(C);
   }
 }
-
 
 int main(int argc, char *argv[]) {
 
@@ -227,6 +259,7 @@ int main(int argc, char *argv[]) {
   }
 
   srand(time(0));
+  initPAPI();
   string filename = "time_algorithm_" + to_string(algorithm) + ".csv";
 
   executeMultiplication(algorithm, filename);
