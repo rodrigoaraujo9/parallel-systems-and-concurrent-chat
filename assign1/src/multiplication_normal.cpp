@@ -13,7 +13,6 @@
 using namespace std;
 using namespace chrono;
 
-#define BKSIZE 64
 #define ITERATIONS 5
 
 using namespace std;
@@ -173,13 +172,7 @@ void initPAPI() {
 
 
 // EXECUTE MULTIPLICATION WITH PAPI METRICS
-
-void executeMultiplication(int algorithm, const string &filename) {
-  vector<int> matrix_sizes = {600, 1000, 1400, 1800, 2200, 2600, 3000};
-
-  if (algorithm == 2) 
-    matrix_sizes.insert(matrix_sizes.end(), {4096, 6144, 8192, 10240});
-
+void matrixMultiplication(int algorithm, const string &filename, vector<int> matrix_sizes, vector<int> block_sizes) {
   for (int matrix_size : matrix_sizes) {
     double *A, *B, *C;
     if (!matrixMemoryAllocation(A, B, C, matrix_size)) return;
@@ -197,39 +190,95 @@ void executeMultiplication(int algorithm, const string &filename) {
     PAPI_add_event(EventSet, PAPI_L1_DCM);
     PAPI_add_event(EventSet, PAPI_L2_DCM);
 
-    for (int iteration = 1; iteration <= ITERATIONS; iteration++) {
-        PAPI_start(EventSet);
-        auto start = high_resolution_clock::now();
+    if (algorithm == 3) {
 
-        double execution_time = 0.0;
-        switch(algorithm) {
-          case 1: 
-            execution_time = measureTime(OnMult, matrix_size, A, B, C);
-            break;
-          case 2:
-            execution_time = measureTime(OnMultLine, matrix_size, A, B, C);
-            break;
-          case 3:
-            cout << "Not implemented for 3.\n";
+      for (int block_size : block_sizes) {
+
+        execution_times.clear();
+
+        for (int iteration = 1; iteration <= ITERATIONS; iteration++) {
+          PAPI_start(EventSet);
+          auto start = high_resolution_clock::now();
+
+          double execution_time = measureTime([&](int m, int n, double *a, double *b, double *c) {
+            OnMultBlockWrapper(m, n, a, b, c, block_size); 
+          }, matrix_size, A, B, C);
+
+          auto end = high_resolution_clock::now();
+          execution_time = duration<double>(end - start).count();
+          PAPI_stop(EventSet, values);
+
+          execution_times.push_back(execution_time);
+
+          ofstream file;
+          file.open(filename, ios::app);
+          if (firstEntry) {
+            file << "Matrix Size,Block Size,Iteration,Time,L1 Misses,L2 Misses\n";
+            firstEntry = false;
+          }
+          file << matrix_size << "," << block_size << "," << iteration << "," << execution_time << "," << values[0] << "," << values[1] << "\n";
+          file.close();
         }
-        auto end = high_resolution_clock::now();
-        execution_time = duration<double>(end - start).count();
-        PAPI_stop(EventSet, values);
 
-        execution_times.push_back(execution_time);
-        writeToCSVfile(filename, matrix_size, execution_time, values[0], values[1], firstEntry, false, false, iteration);
-        firstEntry = false;
+        double median = calculateMedian(execution_times);
+        double avgTime = calculateAvgTime(execution_times);
+
+        ofstream file;
+        file.open(filename, ios::app);
+        file << matrix_size << "," << block_size << ",Median," << median << ",,\n";
+        file << matrix_size << "," << block_size << ",Average Time," << avgTime << ",,\n";
+        file.close();
+      }
+
+    } else {
+      for (int iteration = 1; iteration <= ITERATIONS; iteration++) {
+          PAPI_start(EventSet);
+          auto start = high_resolution_clock::now();
+
+          double execution_time = 0.0;
+          switch(algorithm) {
+            case 1: 
+              execution_time = measureTime(OnMult, matrix_size, A, B, C);
+              break;
+            case 2:
+              execution_time = measureTime(OnMultLine, matrix_size, A, B, C);
+              break;
+          }
+          auto end = high_resolution_clock::now();
+          execution_time = duration<double>(end - start).count();
+          PAPI_stop(EventSet, values);
+
+          execution_times.push_back(execution_time);
+          writeToCSVfile(filename, matrix_size, execution_time, values[0], values[1], firstEntry, false, false, iteration);
+          firstEntry = false;
+      }
+
+      double median = calculateMedian(execution_times);
+      double avgTime = calculateAvgTime(execution_times);
+
+      writeToCSVfile(filename, matrix_size, median, 0, 0, false, true, false);
+      writeToCSVfile(filename, matrix_size, avgTime, 0, 0, false, false, true);
     }
-
-    double median = calculateMedian(execution_times);
-    double avgTime = calculateAvgTime(execution_times);
-
-    writeToCSVfile(filename, matrix_size, median, 0, 0, false, true, false);
-    writeToCSVfile(filename, matrix_size, avgTime, 0, 0, false, false, true);
-
     free(A);
     free(B);
     free(C);
+  }
+}
+
+void executeMultiplication(int algorithm, const string &filename) {
+  vector<int> matrix_sizes = {600, 1000, 1400, 1800, 2200, 2600, 3000};
+  vector<int> block_sizes = {64, 128, 256, 512};
+
+  if (algorithm == 1) {
+    matrixMultiplication(algorithm, filename, matrix_sizes, {});
+
+  } else if (algorithm == 2) {
+    matrix_sizes.insert(matrix_sizes.end(), {4096, 6144, 8192, 10240});
+    matrixMultiplication(algorithm, filename, matrix_sizes, {});
+  
+  } else if (algorithm == 3) {
+    matrix_sizes = {4096, 6144, 8192, 10240};
+    matrixMultiplication(algorithm, filename, matrix_sizes, block_sizes);
   }
 }
 
