@@ -19,7 +19,7 @@ using namespace std;
 
 // WRITE TO CSV FILE
 
-void writeToCSVfile(const string &filename, int matrix_size, double execution_time, long long l1_misses, long long l2_misses, bool firstEntry, bool median = false, bool avgTime = false, int iteration = -1) {
+void writeToCSVfile(const string &filename, int matrix_size, double execution_time, long long l1_misses, long long l2_misses, bool firstEntry, bool median = false, bool avgTime = false, int iteration = -1, int block_size = -1) {
   ofstream file;
   file.open(filename, ios::app);
 
@@ -29,15 +29,30 @@ void writeToCSVfile(const string &filename, int matrix_size, double execution_ti
   }
 
   if (firstEntry) {
-    file << "Matrix Size,Iteration,Time,L1 Misses,L2 Misses\n";
+    if (block_size != -1)
+    file << "Matrix Size,Block Size,Iteration,Time,L1 Misses,L2 Misses\n";
+    else
+      file << "Matrix Size,Iteration,Time,L1 Misses,L2 Misses\n";
   }
 
   if (iteration != -1) {
-    file << matrix_size << "," << iteration << "," << execution_time << "," << l1_misses << "," << l2_misses << "\n";
+    if (block_size != -1) {
+      file << matrix_size << "," << block_size << "," << iteration << "," << execution_time << "," << l1_misses << "," << l2_misses << "\n";
+    } else {
+      file << matrix_size << "," << iteration << "," << execution_time << "," << l1_misses << "," << l2_misses << "\n";
+    }
   } else if (median) {
-    file << matrix_size << ",Median," << execution_time << ",,\n";
+    if (block_size != -1) {
+      file << matrix_size << "," << block_size << ",Median," << execution_time << ",,\n";
+    } else {
+      file << matrix_size << ",Median," << execution_time << ",,\n";
+    }
   } else if (avgTime) {
-    file << matrix_size << ",Average Time," << execution_time << ",,\n";
+    if (block_size != -1) {
+      file << matrix_size << "," << block_size << ",Average Time," << execution_time << ",,\n";
+    } else {
+      file << matrix_size << ",Average Time," << execution_time << ",,\n";
+    }
   }
 
   file.close();
@@ -193,7 +208,6 @@ void matrixMultiplication(int algorithm, const string &filename, vector<int> mat
     if (algorithm == 3) {
 
       for (int block_size : block_sizes) {
-
         execution_times.clear();
 
         for (int iteration = 1; iteration <= ITERATIONS; iteration++) {
@@ -209,27 +223,14 @@ void matrixMultiplication(int algorithm, const string &filename, vector<int> mat
           PAPI_stop(EventSet, values);
 
           execution_times.push_back(execution_time);
-
-          ofstream file;
-          file.open(filename, ios::app);
-          if (firstEntry) {
-            file << "Matrix Size,Block Size,Iteration,Time,L1 Misses,L2 Misses\n";
-            firstEntry = false;
-          }
-          file << matrix_size << "," << block_size << "," << iteration << "," << execution_time << "," << values[0] << "," << values[1] << "\n";
-          file.close();
+          writeToCSVfile(filename, matrix_size, execution_time, values[0], values[1], firstEntry, false, false, iteration, block_size);
+          firstEntry = false;
         }
-
         double median = calculateMedian(execution_times);
         double avgTime = calculateAvgTime(execution_times);
-
-        ofstream file;
-        file.open(filename, ios::app);
-        file << matrix_size << "," << block_size << ",Median," << median << ",,\n";
-        file << matrix_size << "," << block_size << ",Average Time," << avgTime << ",,\n";
-        file.close();
+        writeToCSVfile(filename, matrix_size, median, 0, 0, false, true, false, -1, block_size);
+        writeToCSVfile(filename, matrix_size, avgTime, 0, 0, false, false, true, -1, block_size);
       }
-
     } else {
       for (int iteration = 1; iteration <= ITERATIONS; iteration++) {
           PAPI_start(EventSet);
@@ -249,15 +250,13 @@ void matrixMultiplication(int algorithm, const string &filename, vector<int> mat
           PAPI_stop(EventSet, values);
 
           execution_times.push_back(execution_time);
-          writeToCSVfile(filename, matrix_size, execution_time, values[0], values[1], firstEntry, false, false, iteration);
+          writeToCSVfile(filename, matrix_size, execution_time, values[0], values[1], firstEntry, false, false, iteration, -1);
           firstEntry = false;
       }
-
       double median = calculateMedian(execution_times);
       double avgTime = calculateAvgTime(execution_times);
-
-      writeToCSVfile(filename, matrix_size, median, 0, 0, false, true, false);
-      writeToCSVfile(filename, matrix_size, avgTime, 0, 0, false, false, true);
+      writeToCSVfile(filename, matrix_size, median, 0, 0, false, true, false, -1, -1);
+      writeToCSVfile(filename, matrix_size, avgTime, 0, 0, false, false, true, -1, -1);
     }
     free(A);
     free(B);
