@@ -19,7 +19,7 @@ using namespace std;
 
 // WRITE TO CSV FILE
 
-void writeToCSVfile(const string &filename, int matrix_size, double execution_time, long long l1_misses, long long l2_misses, bool firstEntry, bool median = false, bool avgTime = false, int iteration = -1, int block_size = -1) {
+void writeToCSVfile(const string &filename, int matrix_size, double execution_time, double mflops, long long l1_misses, long long l2_misses, bool firstEntry, bool median = false, bool avgTime = false, int iteration = -1, int block_size = -1) {
   ofstream file;
   file.open(filename, ios::app);
 
@@ -30,28 +30,28 @@ void writeToCSVfile(const string &filename, int matrix_size, double execution_ti
 
   if (firstEntry) {
     if (block_size != -1)
-    file << "Matrix Size,Block Size,Iteration,Time,L1 Misses,L2 Misses\n";
+      file << "Matrix Size,Block Size,Iteration,Time,MFLOPs,L1 Misses,L2 Misses\n";
     else
-      file << "Matrix Size,Iteration,Time,L1 Misses,L2 Misses\n";
+      file << "Matrix Size,Iteration,Time,MFLOPs,L1 Misses,L2 Misses\n";
   }
 
   if (iteration != -1) {
     if (block_size != -1) {
-      file << matrix_size << "," << block_size << "," << iteration << "," << execution_time << "," << l1_misses << "," << l2_misses << "\n";
+      file << matrix_size << "," << block_size << "," << iteration << "," << execution_time << "," << mflops << "," << l1_misses << "," << l2_misses << "\n";
     } else {
-      file << matrix_size << "," << iteration << "," << execution_time << "," << l1_misses << "," << l2_misses << "\n";
+      file << matrix_size << "," << iteration << "," << execution_time << "," << mflops << "," << l1_misses << "," << l2_misses << "\n";
     }
   } else if (median) {
     if (block_size != -1) {
-      file << matrix_size << "," << block_size << ",Median," << execution_time << ",,\n";
+      file << matrix_size << "," << block_size << ",Median," << execution_time << "," << mflops << ",,\n";
     } else {
-      file << matrix_size << ",Median," << execution_time << ",,\n";
+      file << matrix_size << ",Median," << execution_time << "," << mflops << ",,\n";
     }
   } else if (avgTime) {
     if (block_size != -1) {
-      file << matrix_size << "," << block_size << ",Average Time," << execution_time << ",,\n";
+      file << matrix_size << "," << block_size << ",Average Time," << execution_time << "," << mflops << ",,\n";
     } else {
-      file << matrix_size << ",Average Time," << execution_time << ",,\n";
+      file << matrix_size << ",Average Time," << execution_time << "," << mflops << ",,\n";
     }
   }
 
@@ -140,6 +140,11 @@ void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C, int
 
 // CALCULATE METRICS
 
+double calculateMFLOPs(int matrix_size, double execution_time) {
+    double flops = 2.0 * matrix_size * matrix_size * matrix_size;  // 2 * N³ operações
+    return (flops / (execution_time * 1e6));  // Converte para MFLOPs
+}
+
 double measureTime(std::function<void(int, int, double *, double *, double *)> multiplyFunc, int size, double *A, double *B, double *C) {
     auto start = high_resolution_clock::now();
     multiplyFunc(size, size, A, B, C);
@@ -206,7 +211,6 @@ void matrixMultiplication(int algorithm, const string &filename, vector<int> mat
     PAPI_add_event(EventSet, PAPI_L2_DCM);
 
     if (algorithm == 3) {
-
       for (int block_size : block_sizes) {
         execution_times.clear();
 
@@ -222,14 +226,19 @@ void matrixMultiplication(int algorithm, const string &filename, vector<int> mat
           execution_time = duration<double>(end - start).count();
           PAPI_stop(EventSet, values);
 
+          double mflops = calculateMFLOPs(matrix_size, execution_time);
           execution_times.push_back(execution_time);
-          writeToCSVfile(filename, matrix_size, execution_time, values[0], values[1], firstEntry, false, false, iteration, block_size);
+          
+          writeToCSVfile(filename, matrix_size, execution_time, mflops, values[0], values[1], firstEntry, false, false, iteration, block_size);
           firstEntry = false;
         }
         double median = calculateMedian(execution_times);
         double avgTime = calculateAvgTime(execution_times);
-        writeToCSVfile(filename, matrix_size, median, 0, 0, false, true, false, -1, block_size);
-        writeToCSVfile(filename, matrix_size, avgTime, 0, 0, false, false, true, -1, block_size);
+        double median_mflops = calculateMFLOPs(matrix_size, median);
+        double avg_mflops = calculateMFLOPs(matrix_size, avgTime);
+        
+        writeToCSVfile(filename, matrix_size, median, median_mflops, 0, 0, false, true, false, -1, block_size);
+        writeToCSVfile(filename, matrix_size, avgTime, avg_mflops, 0, 0, false, false, true, -1, block_size);
       }
     } else {
       for (int iteration = 1; iteration <= ITERATIONS; iteration++) {
@@ -249,21 +258,25 @@ void matrixMultiplication(int algorithm, const string &filename, vector<int> mat
           execution_time = duration<double>(end - start).count();
           PAPI_stop(EventSet, values);
 
+          double mflops = calculateMFLOPs(matrix_size, execution_time);
           execution_times.push_back(execution_time);
-          writeToCSVfile(filename, matrix_size, execution_time, values[0], values[1], firstEntry, false, false, iteration, -1);
+          
+          writeToCSVfile(filename, matrix_size, execution_time, mflops, values[0], values[1], firstEntry, false, false, iteration, -1);
           firstEntry = false;
       }
       double median = calculateMedian(execution_times);
       double avgTime = calculateAvgTime(execution_times);
-      writeToCSVfile(filename, matrix_size, median, 0, 0, false, true, false, -1, -1);
-      writeToCSVfile(filename, matrix_size, avgTime, 0, 0, false, false, true, -1, -1);
+      double median_mflops = calculateMFLOPs(matrix_size, median);
+      double avg_mflops = calculateMFLOPs(matrix_size, avgTime);
+      
+      writeToCSVfile(filename, matrix_size, median, median_mflops, 0, 0, false, true, false, -1, -1);
+      writeToCSVfile(filename, matrix_size, avgTime, avg_mflops, 0, 0, false, false, true, -1, -1);
     }
     free(A);
     free(B);
     free(C);
   }
 }
-
 void executeMultiplication(int algorithm, const string &filename) {
   vector<int> matrix_sizes = {600, 1000, 1400, 1800, 2200, 2600, 3000};
   vector<int> block_sizes = {64, 128, 256, 512};
