@@ -12,7 +12,7 @@ fi
 MODES_RAW=$1  # Pode ser um único número ou uma lista [1,2,3]
 ITER=$2       # Número de iterações
 PN=$3         # "p" para paralelo, "n" para normal (apenas para modo 2)
-BLOCK_SIZE=$4 # Tamanho do bloco (apenas para modo 3)
+BLOCK_SIZE=$(echo "$BLOCK_SIZE" | xargs)
 
 # Remover colchetes da lista de modos e converter para um array
 MODES=$(echo "$MODES_RAW" | tr -d '[]' | tr ',' ' ')
@@ -76,7 +76,7 @@ if [ "$MODE" -eq 4 ]; then
             done
         elif [ "$TEST_MODE" -eq 3 ]; then
             for BLOCK in 128 256 512; do
-                TEST_DIR="$TEST_DIR" $0 $TEST_MODE $ITER "" $BLOCK  # <-- CORRIGIDO: Sem "p/n"
+                TEST_DIR="$TEST_DIR" $0 $TEST_MODE $ITER $BLOCK 
             done
         else
             TEST_DIR="$TEST_DIR" $0 $TEST_MODE $ITER
@@ -130,7 +130,7 @@ for MODE in $MODES; do
         echo "Executando mode=$MODE para matriz de tamanho $SIZE com $ITER iterações..."
         
         if [[ "$MODE" -eq 3 ]]; then
-            $EXECUTABLE $MODE $SIZE $ITER $PARALLEL_FLAG $BLOCK_SIZE > "$OUTPUT_FILE"
+            $EXECUTABLE $MODE $SIZE $ITER $BLOCK_SIZE > "$OUTPUT_FILE"
         else
             $EXECUTABLE $MODE $SIZE $ITER $PARALLEL_FLAG > "$OUTPUT_FILE"
         fi

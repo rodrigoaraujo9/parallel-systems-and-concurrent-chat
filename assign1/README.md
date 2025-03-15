@@ -4,16 +4,31 @@
 
 To compile and run the C++ implementation, use the following commands:
 
+For algorithm 1:
 ```sh
-g++ -O3 mul-no-papi.cpp -o mul
-./mul
+$ ./script.sh <algorithm> <iterations>
+```
+
+For algorithm 2:
+```sh
+$ ./script.sh <algorithm> <iterations> <parallel>
+```
+
+For algorithm 3:
+```sh
+$ ./script.sh <algorithm> <iterations> <block_size>
 ```
 
 ### Explanation
 
-- `g++ -O3 mul-no-papi.cpp -o mul` compiles the code with **O3 optimization** for better performance.
-- `./mul` runs the compiled executable.
-
+- Compiles the `C/C++` code with the flag `O2` and executes the shell script.
+- `<algorithm>`: Choose the algorithm you want to perform.
+  - `1`: Simple Matrix Multiplication
+  - `2`: Line Matrix Multiplication
+    - `<parallel>`: Choose to run with or without parallelism
+  - `3`: Block Matrix Multiplication
+    - `<block_size>`: Choose the block size
+- `<iterations>`: Choose how many iterations to perform.
 ---
 
 # Running the Rust Matrix Multiplication Implementation
@@ -52,7 +67,7 @@ This mode is useful for debugging but not recommended for performance testing.
   ```sh
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
-- If you experience permission issues, try running `chmod +x mul` before executing `./mul`.
+- If you experience permission issues, try running `chmod +x <file>` before executing the file.
 - To clean build artifacts in Rust, use `cargo clean`.
 
 Let me know if you need additional details!

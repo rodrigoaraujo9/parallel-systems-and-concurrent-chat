@@ -14,11 +14,11 @@
 using namespace std;
 using namespace chrono;
 
-// Definição dos eventos PAPI
+// PAPI events definition
 #define NUM_EVENTS 4
 int events[NUM_EVENTS] = {PAPI_L1_DCM, PAPI_L2_DCM, PAPI_L3_TCM, PAPI_DP_OPS};
 
-// Função para inicializar o PAPI
+// Function to initialize PAPI
 void initPAPI() {
     if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) {
         cerr << "Erro ao iniciar PAPI!" << endl;
@@ -40,8 +40,7 @@ bool matrixMemoryAllocation(double *&A, double *&B, double *&C, int size) {
 }
 
 
-// SIMPLE MATRIX MULTIPLICATION
-
+// Simple Matrix Multiplication
 void OnMult(int m_ar, int m_br, double *pha, double *phb, double *phc) {
     memset(phc, 0, m_ar * m_br * sizeof(double));
 
@@ -57,11 +56,8 @@ void OnMult(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 }
 
 
-
-// LINE-BY-LINE MATRIX MULTIPLICATION
-
-
-void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
+// Line Matrix Multiplication
+void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc, bool parallel) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
 
 
@@ -76,8 +72,7 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 }
 
 
-// Line-by-line parallel
-
+// Line Matrix Multiplication with Parallelism
 void OnMultLine_parallel(int m_ar, int m_br, double *pha, double *phb, double *phc) {
     memset(phc, 0, m_ar * m_br * sizeof(double));
 
@@ -94,8 +89,8 @@ void OnMultLine_parallel(int m_ar, int m_br, double *pha, double *phb, double *p
     }
 }
 
-// BLOCK MATRIX MULTIPLICATION
 
+// Block Matrix Multiplication
 void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb, double *phc) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
 
@@ -120,9 +115,8 @@ void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C, int
   OnMultBlock(m_ar, m_br, blockSize, A, B, C);
 }
 
-// Metricas
 
-// Função para medir MFLOPS
+// MFLOPS
 double calculateMFLOPs(int size, double execution_time) {
   return (2.0 * size * size * size) / (execution_time * 1e6);
 }
@@ -139,7 +133,6 @@ void writeToCSV(const string &filename, int size, int iteration, double time, do
 }
 
 
-
 int main(int argc, char *argv[]) {
   if (argc < 5) {
       cerr << "Uso: ./multiplication <mode> <size> <iterations> <parallel_flag> [block_size]" << endl;
@@ -153,7 +146,7 @@ int main(int argc, char *argv[]) {
   bool parallel = (atoi(argv[4]) == 1);
   int blockSize = (argc == 6) ? atoi(argv[5]) : -1;
 
-  // Inicializa o PAPI
+  // Initialize PAPI
   initPAPI();
 
   string filename = "results_matrix_" + to_string(size) + ".csv";
@@ -174,11 +167,11 @@ int main(int argc, char *argv[]) {
       auto start = high_resolution_clock::now();
 
       if (mode == 1) {
-          OnMult(size, A, B, C);
+          OnMult(size, size, A, B, C);
       } else if (mode == 2) {
-          OnMultLine(size, A, B, C, parallel);
+          OnMultLine(size, size, A, B, C, parallel);
       } else if (mode == 3) {
-          OnMultBlock(size, blockSize, A, B, C);
+          OnMultBlock(size, size, blockSize, A, B, C);
       }
 
       auto end = high_resolution_clock::now();
