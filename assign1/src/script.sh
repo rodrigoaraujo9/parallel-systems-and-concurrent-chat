@@ -1,58 +1,57 @@
 #!/bin/bash
 
-# Verifica se o PAPI está instalado
+# Verify if PAPI is installed
 if ! ldconfig -p | grep -q libpapi; then
-    echo "Erro: PAPI não está instalado!"
+    echo "Error: PAPI not installed."
     exit 1
 fi
 
 
 
 # Argumentos
-MODES_RAW=$1  # Pode ser um único número ou uma lista [1,2,3]
-ITER=$2       # Número de iterações
-PN=$3         # "p" para paralelo, "n" para normal (apenas para modo 2)
+MODES_RAW=$1  
+ITER=$2 # Iterations
+PN=$3 # For algorithm 2, choose between "p" (parallel) or "n" (normal)
 BLOCK_SIZE=$(echo "$BLOCK_SIZE" | xargs)
 
-# Remover colchetes da lista de modos e converter para um array
 MODES=$(echo "$MODES_RAW" | tr -d '[]' | tr ',' ' ')
 
-# Validações
+# Validate
 for MODE in $MODES; do
     if [[ ! "$MODE" =~ ^[1-4]$ ]]; then
-        echo "Erro: O modo deve ser 1, 2, 3 ou 4."
+        echo "Error: Please choose a number between 1 and 4."
         exit 1
     fi
 done
 
 if [[ ! "$ITER" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Erro: O número de iterações deve ser um valor positivo."
+    echo "Error: The number of iterations must be a positive value."
     exit 1
 fi
 
 if [[ "$MODES" =~ "2" ]]; then
     if [[ "$PN" != "p" && "$PN" != "n" ]]; then
-        echo "Erro: O modo 2 requer 'p' para paralelo ou 'n' para normal."
+        echo "Error: Algorithm 2 requires "p" for parallel or "n" for normal."
         exit 1
     fi
 fi
 
 if [[ "$MODES" =~ "3" ]]; then
     if [[ "$BLOCK_SIZE" != "128" && "$BLOCK_SIZE" != "256" && "$BLOCK_SIZE" != "512" ]]; then
-        echo "Erro: O modo 3 requer um block_size de 128, 256 ou 512."
+        echo "Error: Algorithm 3 requires a block size of 128, 256 or 512."
         exit 1
     fi
 fi
 
-# Compila o programa se necessário
+# Compile program
 EXECUTABLE="./multiplication"
 if [ ! -f "$EXECUTABLE" ]; then
-    echo "Compilando o programa..."
+    echo "Compiling program..."
     g++ multiplication.cpp -o multiplication -O2 -fopenmp -lpapi
 fi
 
 
-# Determinar o número do próximo teste e criar a pasta principal (se ainda não existir)
+# Create folder for next test
 if [ -z "$TEST_DIR" ]; then
     TEST_PREFIX="teste_"
     LAST_TEST=$(ls -d ${TEST_PREFIX}* 2>/dev/null | awk -F '_' '{print $2}' | sort -n | tail -1)
@@ -65,9 +64,9 @@ if [ -z "$TEST_DIR" ]; then
     mkdir -p "$TEST_DIR"
 fi
 
-# Se algum dos modos for 4, executar todos os testes
+# Execute all tests
 if [ "$MODE" -eq 4 ]; then
-    echo "Executando todos os testes com $ITER iterações..."
+    echo "Executing all tests with $ITER iterations..."
 
     for TEST_MODE in 1 2 3; do
         if [ "$TEST_MODE" -eq 2 ]; then
@@ -85,10 +84,10 @@ if [ "$MODE" -eq 4 ]; then
     exit 0
 fi
 
-# Executar os modos especificados
+# Execute specified algorithm
 for MODE in $MODES; do
 
-    # Define a flag para paralelismo (aplica-se apenas ao modo 2)
+    # Flag for parallelism in algorithm 2
     PARALLEL_FLAG=0
     if [[ "$MODE" -eq 2 ]]; then
         if [ "$PN" == "p" ]; then
@@ -96,7 +95,7 @@ for MODE in $MODES; do
         fi
     fi
 
-    # Definir nome do subdiretório baseado no modo dentro da pasta do teste
+    # Subfolder name
     if [[ "$MODE" -eq 1 ]]; then
         SUBDIR="normal"
     elif [[ "$MODE" -eq 2 ]]; then
@@ -108,26 +107,27 @@ for MODE in $MODES; do
     elif [[ "$MODE" -eq 3 ]]; then
         SUBDIR="block_${BLOCK_SIZE}"
     else
-        echo "Modo inválido!"
+        echo "Invalid mode"
         exit 1
     fi
 
-    # Criar subdiretório dentro do diretório de teste
+    # Create subfolder
     TEST_SUBDIR="$TEST_DIR/$SUBDIR"
     mkdir -p "$TEST_SUBDIR"
 
-    # Lista de tamanhos de matriz
+    # Matrix sizes
     MATRIX_SIZES=(600 1000 1400 1800 2200 2600 3000)
     if [ "$MODE" -eq 2 ] || [ "$MODE" -eq 3 ]; then
         MATRIX_SIZES+=(4096 6144 8192 10240)
     fi
-    # Executa os testes
+
+    # Execute tests
     for SIZE in "${MATRIX_SIZES[@]}"; do
         OUTPUT_DIR="$TEST_SUBDIR/matrix_${SIZE}"
         mkdir -p "$OUTPUT_DIR"
         OUTPUT_FILE="$OUTPUT_DIR/results.csv"
 
-        echo "Executando mode=$MODE para matriz de tamanho $SIZE com $ITER iterações..."
+        echo "Executing algorithm $MODE for matrix size $SIZE with $ITER iterations..."
         
         if [[ "$MODE" -eq 3 ]]; then
             $EXECUTABLE $MODE $SIZE $ITER $BLOCK_SIZE > "$OUTPUT_FILE"
@@ -138,6 +138,6 @@ for MODE in $MODES; do
         mv "results_matrix_${SIZE}.csv" "$OUTPUT_FILE"
     done
 
-    echo "Resultados salvos em $TEST_SUBDIR"
+    echo "Results saved in $TEST_SUBDIR"
 
 done
