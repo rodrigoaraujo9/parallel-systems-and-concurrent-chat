@@ -14,6 +14,7 @@ using namespace std;
 using namespace chrono;
 
 
+// Generate Matrices
 void generateRandomMatrix(double *matrix, int size) {
   for (int i = 0; i < size * size; i++) {
       matrix[i] = (double)(rand() % 10 + 1);
@@ -28,8 +29,7 @@ bool matrixMemoryAllocation(double *&A, double *&B, double *&C, int size) {
 }
 
 
-// SIMPLE MATRIX MULTIPLICATION
-
+// Simple Matrix Multiplication
 void OnMult(int m_ar, int m_br, double *pha, double *phb, double *phc) {
     memset(phc, 0, m_ar * m_br * sizeof(double));
 
@@ -45,10 +45,7 @@ void OnMult(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 }
 
 
-
-// LINE-BY-LINE MATRIX MULTIPLICATION
-
-
+// Line Matrix Multiplication
 void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
 
@@ -64,8 +61,7 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 }
 
 
-// Line-by-line parallel
-
+// Line Matrix Multiplication with Parallelism
 void OnMultLine_parallel(int m_ar, int m_br, double *pha, double *phb, double *phc) {
     memset(phc, 0, m_ar * m_br * sizeof(double));
 
@@ -82,8 +78,8 @@ void OnMultLine_parallel(int m_ar, int m_br, double *pha, double *phb, double *p
     }
 }
 
-// BLOCK MATRIX MULTIPLICATION
 
+// Block Matrix Multiplication
 void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb, double *phc) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
 
@@ -109,7 +105,7 @@ void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C, int
 }
 
 
-
+// CSV file 
 void writeToCSVfile(const string &filename, int matrix_size, vector<double> &execution_times) {
   ofstream file(filename, ios::app);
   if (!file.is_open()) {
@@ -122,6 +118,7 @@ void writeToCSVfile(const string &filename, int matrix_size, vector<double> &exe
   }
   file.close();
 }
+
 
 int main(int argc, char *argv[]) {
   if (argc < 5) {
