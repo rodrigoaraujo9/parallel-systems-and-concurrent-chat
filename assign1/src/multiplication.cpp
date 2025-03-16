@@ -151,40 +151,39 @@ int main(int argc, char *argv[]) {
 
   string filename = "results_matrix_" + to_string(size) + ".csv";
   
-  for (int iter = 1; iter <= iterations; iter++) {
-      double *A, *B, *C;
-      if (!matrixMemoryAllocation(A, B, C, size)) return 1;
-      generateRandomMatrix(A, size);
-      generateRandomMatrix(B, size);
+  double *A, *B, *C;
+  if (!matrixMemoryAllocation(A, B, C, size)) return 1;
+  generateRandomMatrix(A, size);
+  generateRandomMatrix(B, size);
 
-      long long values[NUM_EVENTS] = {0};
-      int EventSet = PAPI_NULL;
+  long long values[NUM_EVENTS] = {0};
+  int EventSet = PAPI_NULL;
 
-      PAPI_create_eventset(&EventSet);
-      PAPI_add_events(EventSet, events, NUM_EVENTS);
-      PAPI_start(EventSet);
+  PAPI_create_eventset(&EventSet);
+  PAPI_add_events(EventSet, events, NUM_EVENTS);
+  PAPI_start(EventSet);
 
-      auto start = high_resolution_clock::now();
+  auto start = high_resolution_clock::now();
 
-      if (mode == 1) {
-          OnMult(size, size, A, B, C);
-      } else if (mode == 2) {
-          OnMultLine(size, size, A, B, C, parallel);
-      } else if (mode == 3) {
-          OnMultBlock(size, size, blockSize, A, B, C);
-      }
-
-      auto end = high_resolution_clock::now();
-      PAPI_stop(EventSet, values);
-
-      double execution_time = duration<double>(end - start).count();
-      double mflops = calculateMFLOPs(size, execution_time);
-
-      writeToCSV(filename, size, iter, execution_time, mflops, values[0], values[1], values[2]);
-
-      delete[] A;
-      delete[] B;
-      delete[] C;
+  if (mode == 1) {
+      OnMult(size, size, A, B, C);
+  } else if (mode == 2) {
+      OnMultLine(size, size, A, B, C, parallel);
+  } else if (mode == 3) {
+      OnMultBlock(size, size, blockSize, A, B, C);
   }
+
+  auto end = high_resolution_clock::now();
+  PAPI_stop(EventSet, values);
+
+  double execution_time = duration<double>(end - start).count();
+  double mflops = calculateMFLOPs(size, execution_time);
+
+  writeToCSV(filename, size, iter, execution_time, mflops, values[0], values[1], values[2]);
+
+  delete[] A;
+  delete[] B;
+  delete[] C;
+  
   return 0;
 }
