@@ -8,11 +8,11 @@ fi
 
 
 
-# Argumentos
+# Arguments
 MODES_RAW=$1  
 ITER=$2 # Iterations
 PN=$3 # For algorithm 2, choose between "p" (parallel) or "n" (normal)
-BLOCK_SIZE=$(echo "$BLOCK_SIZE" | xargs)
+BLOCK_SIZE=$3
 
 MODES=$(echo "$MODES_RAW" | tr -d '[]' | tr ',' ' ')
 
@@ -53,7 +53,7 @@ fi
 
 # Create folder for next test
 if [ -z "$TEST_DIR" ]; then
-    TEST_PREFIX="teste_"
+    TEST_PREFIX="test_"
     LAST_TEST=$(ls -d ${TEST_PREFIX}* 2>/dev/null | awk -F '_' '{print $2}' | sort -n | tail -1)
     if [ -z "$LAST_TEST" ]; then
         TEST_NUMBER=0
@@ -117,8 +117,10 @@ for MODE in $MODES; do
 
     # Matrix sizes
     MATRIX_SIZES=(600 1000 1400 1800 2200 2600 3000)
-    if [ "$MODE" -eq 2 ] || [ "$MODE" -eq 3 ]; then
+    if [[ "$MODE" -eq 2 ]] ; then
         MATRIX_SIZES+=(4096 6144 8192 10240)
+    elif [[ "$MODE" -eq 3 ]] ; then
+        MATRIX_SIZES=(4096 6144 8192 10240)
     fi
 
     # Execute tests
@@ -127,8 +129,12 @@ for MODE in $MODES; do
         mkdir -p "$OUTPUT_DIR"
         OUTPUT_FILE="$OUTPUT_DIR/results.csv"
 
-        echo "Executing algorithm $MODE for matrix size $SIZE with $ITER iterations..."
-        
+        if [ "$MODE" -eq 1 ] || [ "$MODE" -eq 2 ] ; then
+            echo "Executing algorithm $MODE for matrix size $SIZE with $ITER iterations..."
+        elif [[ "$MODE" -eq 3 ]] ; then
+            echo "Executing algorithm $MODE for matrix size $SIZE and block size $BLOCK_SIZE with $ITER iterations..."
+        fi
+
         if [[ "$MODE" -eq 3 ]]; then
             $EXECUTABLE $MODE $SIZE $ITER $BLOCK_SIZE > "$OUTPUT_FILE"
         else

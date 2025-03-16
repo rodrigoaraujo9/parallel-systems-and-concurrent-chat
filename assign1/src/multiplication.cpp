@@ -21,7 +21,7 @@ int events[NUM_EVENTS] = {PAPI_L1_DCM, PAPI_L2_DCM, PAPI_L3_TCM, PAPI_DP_OPS};
 // Function to initialize PAPI
 void initPAPI() {
     if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) {
-        cerr << "Erro ao iniciar PAPI!" << endl;
+        cerr << "Error initializing PAPI!" << endl;
         exit(1);
     }
 }
@@ -125,7 +125,7 @@ double calculateMFLOPs(int size, double execution_time) {
 void writeToCSV(const string &filename, int size, int iteration, double time, double mflops, long long l1_misses, long long l2_misses, long long l3_misses) {
   ofstream file(filename, ios::app);
   if (!file.is_open()) {
-      cerr << "Erro ao abrir o arquivo CSV." << endl;
+      cerr << "Error opening CSV file." << endl;
       return;
   }
   file << size << "," << iteration << "," << time << "," << mflops << "," << l1_misses << "," << l2_misses << "," << l3_misses << endl;

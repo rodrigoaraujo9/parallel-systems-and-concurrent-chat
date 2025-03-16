@@ -6,17 +6,22 @@ To compile and run the C++ implementation, use the following commands:
 
 For algorithm 1:
 ```sh
-$ ./script.sh <algorithm> <iterations>
+$ ./script.sh 1 <iterations>
 ```
 
 For algorithm 2:
 ```sh
-$ ./script.sh <algorithm> <iterations> <parallel>
+$ ./script.sh 2 <iterations> <p/n>
 ```
 
 For algorithm 3:
 ```sh
-$ ./script.sh <algorithm> <iterations> <block_size>
+$ ./script.sh 3 <iterations> <block_size>
+```
+
+To execute all possible tests:
+```sh
+$ ./script.sh 4 <iterations>
 ```
 
 ### Explanation
