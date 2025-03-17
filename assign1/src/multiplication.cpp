@@ -74,12 +74,13 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 // Line Matrix Multiplication with Parallelism
 void OnMultLine_parallel(int m_ar, int m_br, double *pha, double *phb, double *phc) {
     memset(phc, 0, m_ar * m_br * sizeof(double));
+    omp_set_nested(1);
 
-    #pragma omp parallel for schedule(static) private(i,j) 
+    #pragma omp parallel for schedule(static) 
     for (int i = 0; i < m_ar; i++) {
         for (int j = 0; j < m_br; j++) {
             double sum = 0.0;
-            #pragma omp for schedule(static,10) reduction(+:sum) private(k) // Enables SIMD for better vectorization
+            #pragma omp parallel for schedule(static,10) reduction(+:sum) // Enables SIMD for better vectorization
             for (int k = 0; k < m_ar; k++) {
                 sum += pha[i * m_ar + k] * phb[j * m_br + k];
             }
@@ -161,7 +162,7 @@ int main(int argc, char *argv[]) {
 
   // Print results in CSV format to stdout.
   cout << "Matrix Size,Time,MFLOPS,L1_misses,L2_misses,L3_misses" << endl;
-  cout << size << "," << execution_time << "," << mflops << "," << values[0] << "," << values[1] << "," << values[2] << endl;
+  cout << size << "," << execution_time << "," << values[3] << "," << values[0] << "," << values[1] << "," << values[2] << endl;
 
   delete[] A;
   delete[] B;
