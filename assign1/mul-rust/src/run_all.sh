@@ -30,11 +30,15 @@ else
     exit 1
 fi
 
-# Create a new, uniquely named results folder.
-RESULTS_DIR="$SCRIPT_DIR/results_$(date +%Y%m%d_%H%M%S)"
+# Create a new results folder with incremental naming.
+result_index=0
+while [ -d "$SCRIPT_DIR/results_$result_index" ]; do
+    result_index=$((result_index + 1))
+done
+RESULTS_DIR="$SCRIPT_DIR/results_$result_index"
 mkdir -p "$RESULTS_DIR"
 
-# For each mode (normal and line) create one CSV file bundling all iterations.
+# For each mode (Normal and Line) produce one CSV file bundling all iterations.
 for mode in n l; do
     if [ "$mode" = "n" ]; then
         CSV_FILE="$RESULTS_DIR/normal.csv"
@@ -54,7 +58,7 @@ for mode in n l; do
         line="$size"
         # Run the test NUM_RUNS times for this matrix size.
         for r in $(seq 1 "$NUM_RUNS"); do
-            # The binary prints a header on the first line and the elapsed time on the second.
+            # The binary prints a header in the first line and the elapsed time in the second.
             time_sec=$("$BINARY" "$mode" "$size" | sed -n '2p')
             line="$line,$time_sec"
         done
