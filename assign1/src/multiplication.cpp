@@ -75,11 +75,11 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 void OnMultLine_parallel(int m_ar, int m_br, double *pha, double *phb, double *phc) {
     memset(phc, 0, m_ar * m_br * sizeof(double));
 
-    #pragma omp parallel for schedule(dynamic) 
+    #pragma omp parallel for schedule(static) private(i,j) 
     for (int i = 0; i < m_ar; i++) {
         for (int j = 0; j < m_br; j++) {
             double sum = 0.0;
-            #pragma omp simd reduction(+:sum) // Enables SIMD for better vectorization
+            #pragma omp for schedule(static,10) reduction(+:sum) private(k) // Enables SIMD for better vectorization
             for (int k = 0; k < m_ar; k++) {
                 sum += pha[i * m_ar + k] * phb[j * m_br + k];
             }
@@ -87,7 +87,6 @@ void OnMultLine_parallel(int m_ar, int m_br, double *pha, double *phb, double *p
         }
     }
 }
-
 
 // Block Matrix Multiplication
 void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb, double *phc) {
