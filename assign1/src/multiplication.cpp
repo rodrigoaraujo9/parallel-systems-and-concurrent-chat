@@ -57,9 +57,8 @@ void OnMult(int m_ar, int m_br, double *pha, double *phb, double *phc) {
 
 
 // Line Matrix Multiplication
-void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc, bool parallel) {
+void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
   memset(phc, 0, m_ar * m_br * sizeof(double));
-
 
     for (int i = 0; i < m_ar; i++) {
         for (int j = 0; j < m_br; j++) {
@@ -111,46 +110,27 @@ void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb, doubl
   }
 }
 
-void OnMultBlockWrapper(int m_ar, int m_br, double *A, double *B, double *C, int blockSize) {
-  OnMultBlock(m_ar, m_br, blockSize, A, B, C);
-}
 
 
-// MFLOPS
 double calculateMFLOPs(int size, double execution_time) {
   return (2.0 * size * size * size) / (execution_time * 1e6);
 }
 
-
-void writeToCSV(const string &filename, int size, int iteration, double time, double mflops, long long l1_misses, long long l2_misses, long long l3_misses) {
-  ofstream file(filename, ios::app);
-  if (!file.is_open()) {
-      cerr << "Error opening CSV file." << endl;
-      return;
-  }
-  file << size << "," << iteration << "," << time << "," << mflops << "," << l1_misses << "," << l2_misses << "," << l3_misses << endl;
-  file.close();
-}
-
-
 int main(int argc, char *argv[]) {
   if (argc < 5) {
-      cerr << "Uso: ./multiplication <mode> <size> <iterations> <parallel_flag> [block_size]" << endl;
+      cerr << "Usage: ./multiplication <mode> <size> <dummy_iteration> <parallel_flag> [block_size]" << endl;
       return 1;
   }
 
-
   int mode = atoi(argv[1]);
   int size = atoi(argv[2]);
-  int iterations = atoi(argv[3]);
+  // The dummy iteration parameter is ignored; each execution performs only one iteration.
   bool parallel = (atoi(argv[4]) == 1);
   int blockSize = (argc == 6) ? atoi(argv[5]) : -1;
 
   // Initialize PAPI
   initPAPI();
 
-  string filename = "results_matrix_" + to_string(size) + ".csv";
-  
   double *A, *B, *C;
   if (!matrixMemoryAllocation(A, B, C, size)) return 1;
   generateRandomMatrix(A, size);
@@ -158,32 +138,35 @@ int main(int argc, char *argv[]) {
 
   long long values[NUM_EVENTS] = {0};
   int EventSet = PAPI_NULL;
-
   PAPI_create_eventset(&EventSet);
   PAPI_add_events(EventSet, events, NUM_EVENTS);
   PAPI_start(EventSet);
 
   auto start = high_resolution_clock::now();
-
   if (mode == 1) {
       OnMult(size, size, A, B, C);
   } else if (mode == 2) {
-      OnMultLine(size, size, A, B, C, parallel);
+      if (parallel) {
+          OnMultLine_parallel(size, size, A, B, C);
+      } else {
+          OnMultLine(size, size, A, B, C);
+      }
   } else if (mode == 3) {
       OnMultBlock(size, size, blockSize, A, B, C);
   }
-
   auto end = high_resolution_clock::now();
   PAPI_stop(EventSet, values);
 
   double execution_time = duration<double>(end - start).count();
   double mflops = calculateMFLOPs(size, execution_time);
 
-  writeToCSV(filename, size, iter, execution_time, mflops, values[0], values[1], values[2]);
+  // Print results in CSV format to stdout.
+  cout << "Matrix Size,Time,MFLOPS,L1_misses,L2_misses,L3_misses" << endl;
+  cout << size << "," << execution_time << "," << mflops << "," << values[0] << "," << values[1] << "," << values[2] << endl;
 
   delete[] A;
   delete[] B;
   delete[] C;
-  
+
   return 0;
 }
