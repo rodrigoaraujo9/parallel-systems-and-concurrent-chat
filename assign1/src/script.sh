@@ -101,7 +101,7 @@ for MODE in $MODES; do
         if [ "$PARALLEL_FLAG" -eq 1 ]; then
             SUBDIR="line_parallel_l1"
         elif [ "$PARALLEL_FLAG" -eq 2 ]; then
-            SUBDIR="line_parallel_l1"
+            SUBDIR="line_parallel_l2"
         else
             SUBDIR="line_normal"
         fi
