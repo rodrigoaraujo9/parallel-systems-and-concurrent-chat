@@ -30,7 +30,7 @@ fi
 
 if [[ "$MODES" =~ "2" ]]; then
     if [[ "$PN" != "p1" && "$PN" != "p2" && "$PN" != "n" ]]; then
-        echo "Error: Mode 2 requires 'pi' or 'po' for parallel or 'n' for normal."
+        echo "Error: Mode 2 requires 'p1' or 'p2' for parallel or 'n' for normal."
         exit 1
     fi
 fi

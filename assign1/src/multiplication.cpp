@@ -160,6 +160,7 @@ int main(int argc, char *argv[]) {
       } 
       else if (parallel_2) {
           OnMultLine_parallel_2(size, size, A, B, C);
+      }
       else {
           OnMultLine(size, size, A, B, C);
       }
