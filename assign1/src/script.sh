@@ -89,8 +89,10 @@ for MODE in $MODES; do
     if [[ "$MODE" -eq 2 ]]; then
         if [ "$PN" == "p1" ]; then
             PARALLEL_FLAG=1
-        elif ["$PN" == "p2"]; then 
+        elif [ "$PN" == "p2" ]; then 
             PARALLEL_FLAG=2
+        else 
+            PARALLEL_FLAG=0
         fi
     fi
 
