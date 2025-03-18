@@ -9,7 +9,7 @@ fi
 # Arguments
 MODES_RAW=$1  # Can be a single number or a list [1,2,3]
 ITER=$2       # Number of iterations
-PN=$3         # "p" for parallel, "n" for normal (only for mode 2)
+PN=$3         # "p1" or "p2" for parallel, "n" for normal (only for mode 2)
 BLOCK_SIZE=$4 # Block size (only for mode 3)
 
 # Remove brackets from the modes list and convert to an array
@@ -29,8 +29,8 @@ if [[ ! "$ITER" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 if [[ "$MODES" =~ "2" ]]; then
-    if [[ "$PN" != "p" && "$PN" != "n" ]]; then
-        echo "Error: Mode 2 requires 'p' for parallel or 'n' for normal."
+    if [[ "$PN" != "p1" && "$PN" != "p2" && "$PN" != "n" ]]; then
+        echo "Error: Mode 2 requires 'pi' or 'po' for parallel or 'n' for normal."
         exit 1
     fi
 fi
@@ -67,8 +67,8 @@ if [ "$MODE" -eq 4 ]; then
     echo "Executing all tests with $ITER iterations..."
     for TEST_MODE in 1 2 3; do
         if [ "$TEST_MODE" -eq 2 ]; then
-            for PARALLEL in "n" "p"; do
-                TEST_DIR="$TEST_DIR" $0 $TEST_MODE $ITER $PARALLEL
+            for PARALLEL in "n" "pi" "po"; do
+                TEST_DIR="$TEST_DIR" $0 $TEST_MODE $ITER $PARALLEL_TYPE
             done
         elif [ "$TEST_MODE" -eq 3 ]; then
             for BLOCK in 128 256 512; do
@@ -87,8 +87,10 @@ for MODE in $MODES; do
     # Define the parallel flag (applies only to mode 2)
     PARALLEL_FLAG=0
     if [[ "$MODE" -eq 2 ]]; then
-        if [ "$PN" == "p" ]; then
+        if [ "$PN" == "p1" ]; then
             PARALLEL_FLAG=1
+        elif ["$PN" == "p2"]; then 
+            PARALLEL_FLAG=2
         fi
     fi
 
@@ -97,7 +99,9 @@ for MODE in $MODES; do
         SUBDIR="normal"
     elif [[ "$MODE" -eq 2 ]]; then
         if [ "$PARALLEL_FLAG" -eq 1 ]; then
-            SUBDIR="line_parallel"
+            SUBDIR="line_parallel_l1"
+        elif [ "$PARALLEL_FLAG" -eq 2 ]; then
+            SUBDIR="line_parallel_l1"
         else
             SUBDIR="line_normal"
         fi

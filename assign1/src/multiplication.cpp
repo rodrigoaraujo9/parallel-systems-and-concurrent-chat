@@ -70,17 +70,28 @@ void OnMultLine(int m_ar, int m_br, double *pha, double *phb, double *phc) {
     }
 }
 
-
-// Line Matrix Multiplication with Parallelism
-void OnMultLine_parallel(int m_ar, int m_br, double *pha, double *phb, double *phc) {
+void OnMultLine_parallel_1(int m_ar, int m_br, double *pha, double *phb, double *phc) {
     memset(phc, 0, m_ar * m_br * sizeof(double));
-    omp_set_nested(1);
-
-    #pragma omp parallel for schedule(static) 
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < m_ar; i++) {
         for (int j = 0; j < m_br; j++) {
             double sum = 0.0;
-            #pragma omp parallel for schedule(static,10) reduction(+:sum) // Enables SIMD for better vectorization
+            for (int k = 0; k < m_ar; k++) {
+                sum += pha[i * m_ar + k] * phb[j * m_br + k];
+            }
+            phc[i * m_ar + j] = sum;
+        }
+    }
+}
+
+
+void OnMultLine_parallel_2(int m_ar, int m_br, double *pha, double *phb, double *phc) {
+    memset(phc, 0, m_ar * m_br * sizeof(double));
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < m_ar; i++) {
+        for (int j = 0; j < m_br; j++) {
+            double sum = 0.0;
+            #pragma omp parallel for schedule(static,10) reduction(+:sum)
             for (int k = 0; k < m_ar; k++) {
                 sum += pha[i * m_ar + k] * phb[j * m_br + k];
             }
@@ -112,9 +123,6 @@ void OnMultBlock(int m_ar, int m_br, int bkSize, double *pha, double *phb, doubl
 
 
 
-double calculateMFLOPs(int size, double execution_time) {
-  return (2.0 * size * size * size) / (execution_time * 1e6);
-}
 
 int main(int argc, char *argv[]) {
   if (argc < 5) {
@@ -125,7 +133,8 @@ int main(int argc, char *argv[]) {
   int mode = atoi(argv[1]);
   int size = atoi(argv[2]);
   // The dummy iteration parameter is ignored; each execution performs only one iteration.
-  bool parallel = (atoi(argv[4]) == 1);
+  bool parallel_1 = (atoi(argv[4]) == 1);
+  bool parallel_2 = (atoi(argv[4]) == 2);
   int blockSize = (argc == 6) ? atoi(argv[5]) : -1;
 
   // Initialize PAPI
@@ -146,9 +155,12 @@ int main(int argc, char *argv[]) {
   if (mode == 1) {
       OnMult(size, size, A, B, C);
   } else if (mode == 2) {
-      if (parallel) {
-          OnMultLine_parallel(size, size, A, B, C);
-      } else {
+      if (parallel_1) {
+          OnMultLine_parallel_1(size, size, A, B, C);
+      } 
+      else if (parallel_2) {
+          OnMultLine_parallel_2(size, size, A, B, C);
+      else {
           OnMultLine(size, size, A, B, C);
       }
   } else if (mode == 3) {
@@ -158,8 +170,7 @@ int main(int argc, char *argv[]) {
   PAPI_stop(EventSet, values);
 
   double execution_time = duration<double>(end - start).count();
-  double mflops = calculateMFLOPs(size, execution_time);
-
+ 
   // Print results in CSV format to stdout.
   cout << "Matrix Size,Time,MFLOPS,L1_misses,L2_misses,L3_misses" << endl;
   cout << size << "," << execution_time << "," << values[3] << "," << values[0] << "," << values[1] << "," << values[2] << endl;
