@@ -1,201 +1,140 @@
-use csv::Writer;
 use std::env;
-use std::fs::{create_dir_all, metadata, OpenOptions};
 use std::time::Instant;
 
-pub fn basic_matrix_multiplication(a: &[f64], b: &[f64], side: usize) -> Option<Vec<f64>> {
-    if a.len() != side * side || b.len() != side * side {
-        return None;
-    }
-    let mut result = vec![0.0; side * side];
-    for i in 0..side {
-        for k in 0..side {
-            let a_val = a[i * side + k];
-            for j in 0..side {
-                result[i * side + j] += a_val * b[k * side + j];
-            }
-        }
-    }
-    Some(result)
+#[derive(Debug, Clone)]
+pub struct Matrix {
+    side: usize,
+    data: Vec<f64>,
 }
 
-pub fn line_matrix_multiplication(a: &[f64], b: &[f64]) -> Option<Vec<f64>> {
-    if a.len() != b.len() {
-        return None;
+impl Matrix {
+    pub fn new(side: usize) -> Self {
+        let data = (0..side * side).map(|i| (i % 10) as f64).collect();
+        Matrix { side, data }
     }
-    let length = a.len();
-    let side_f64 = (length as f64).sqrt();
-    if side_f64.fract() != 0.0 {
-        return None;
-    }
-    let side = side_f64 as usize;
-    let mut result = vec![0.0; length];
-    for i in 0..side {
-        for k in 0..side {
-            let a_val = a[i * side + k];
-            for j in 0..side {
-                result[i * side + j] += a_val * b[k * side + j];
-            }
+
+    pub fn from_vec(side: usize, data: Vec<f64>) -> Option<Self> {
+        if data.len() != side * side {
+            None
+        } else {
+            Some(Matrix { side, data })
         }
     }
-    Some(result)
-}
 
-pub fn block_matrix_multiplication(a: &[f64], b: &[f64], block_size: usize) -> Option<Vec<f64>> {
-    if a.len() != b.len() {
-        return None;
+    pub fn multiply_basic(&self, other: &Matrix) -> Option<Matrix> {
+        if self.side != other.side {
+            return None;
+        }
+        let side = self.side;
+        let mut result = vec![0.0; side * side];
+        for i in 0..side {
+            for k in 0..side {
+                let a_val = self.data[i * side + k];
+                for j in 0..side {
+                    result[i * side + j] += a_val * other.data[k * side + j];
+                }
+            }
+        }
+        Some(Matrix { side, data: result })
     }
-    let length = a.len();
-    let side_f64 = (length as f64).sqrt();
-    if side_f64.fract() != 0.0 {
-        return None;
+
+    pub fn multiply_line(&self, other: &Matrix) -> Option<Matrix> {
+        if self.side != other.side {
+            return None;
+        }
+        let side = self.side;
+        let mut result = vec![0.0; side * side];
+        for i in 0..side {
+            for k in 0..side {
+                let a_val = self.data[i * side + k];
+                for j in 0..side {
+                    result[i * side + j] += a_val * other.data[k * side + j];
+                }
+            }
+        }
+        Some(Matrix { side, data: result })
     }
-    let side = side_f64 as usize;
-    let mut result = vec![0.0; length];
-    for ii in (0..side).step_by(block_size) {
-        for jj in (0..side).step_by(block_size) {
-            for kk in (0..side).step_by(block_size) {
-                for i in ii..(ii + block_size).min(side) {
-                    for k in kk..(kk + block_size).min(side) {
-                        let a_val = a[i * side + k];
-                        for j in jj..(jj + block_size).min(side) {
-                            result[i * side + j] += a_val * b[k * side + j];
+
+    pub fn multiply_block(&self, other: &Matrix, block_size: usize) -> Option<Matrix> {
+        if self.side != other.side {
+            return None;
+        }
+        let side = self.side;
+        let mut result = vec![0.0; side * side];
+        for ii in (0..side).step_by(block_size) {
+            for jj in (0..side).step_by(block_size) {
+                for kk in (0..side).step_by(block_size) {
+                    for i in ii..(ii + block_size).min(side) {
+                        for k in kk..(kk + block_size).min(side) {
+                            let a_val = self.data[i * side + k];
+                            for j in jj..(jj + block_size).min(side) {
+                                result[i * side + j] += a_val * other.data[k * side + j];
+                            }
                         }
                     }
                 }
             }
         }
+        Some(Matrix { side, data: result })
     }
-    Some(result)
 }
 
-fn generate_matrix(size: usize) -> Vec<f64> {
-    (0..size * size).map(|i| (i % 10) as f64).collect()
+enum Mode {
+    Normal,
+    Line,
+    Block(usize),
 }
 
-/// Writes a record to a CSV file specified by `file_path`. If the file is new (does not exist),
-/// the provided `header` is written first.
-fn write_csv_record(file_path: &str, record: &[&str], header: &[&str]) {
-    let file_exists = metadata(file_path).is_ok();
-    let file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(file_path)
-        .expect("Unable to open file");
-    let mut wtr = Writer::from_writer(file);
-    if !file_exists {
-        wtr.write_record(header)
-            .expect("Unable to write CSV header");
+impl Mode {
+    fn from_args(mode_str: &str, maybe_block_size: Option<usize>) -> Option<Self> {
+        match mode_str.to_lowercase().as_str() {
+            "n" => Some(Mode::Normal),
+            "l" => Some(Mode::Line),
+            "b" => maybe_block_size.map(Mode::Block),
+            _ => None,
+        }
     }
-    wtr.write_record(record)
-        .expect("Unable to write CSV record");
-    wtr.flush().expect("Unable to flush CSV file");
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let iterations = match args.get(1) {
-        Some(arg) if arg != "test" => match arg.parse::<usize>() {
-            Ok(n) => n,
-            Err(_) => {
-                eprintln!("Invalid value for iterations: {}. Defaulting to 1.", arg);
-                1
-            }
-        },
-        _ => 1,
-    };
-    let test_flag = args.iter().any(|arg| arg == "test");
-    let basic_sizes = if test_flag {
-        (600..=1800).step_by(400).collect::<Vec<usize>>()
-    } else {
-        (600..=3000).step_by(400).collect::<Vec<usize>>()
-    };
-    let block_sizes = if test_flag {
-        (600..=1800).step_by(400).collect::<Vec<usize>>()
-    } else {
-        (4096..=10240).step_by(2048).collect::<Vec<usize>>()
-    };
-
-    // Create folders for each function
-    create_dir_all("basic").expect("Unable to create folder 'basic'");
-    create_dir_all("line").expect("Unable to create folder 'line'");
-    create_dir_all("block").expect("Unable to create folder 'block'");
-
-    println!("1: Comparing Basic and Line Multiplication");
-    for &size in &basic_sizes {
-        println!("\nProcessing a matrix of size {}x{}...", size, size);
-        let a = generate_matrix(size);
-        let b = generate_matrix(size);
-
-        // Basic multiplication: results stored in "basic/basic_matrix_<size>.csv"
-        let basic_file = format!("basic/basic_matrix_{}.csv", size);
-        for iter in 0..iterations {
-            let start = Instant::now();
-            if let Some(_res) = basic_matrix_multiplication(&a, &b, size) {
-                let duration_sec = start.elapsed().as_nanos() as f64 / 1_000_000_000.0;
-                write_csv_record(
-                    &basic_file,
-                    &[&iter.to_string(), &duration_sec.to_string()],
-                    &["iteration", "time_sec"],
-                );
-            } else {
-                eprintln!(
-                    "Warning: basic_matrix_multiplication returned None for size {}.",
-                    size
-                );
-            }
-        }
-
-        // Line multiplication: results stored in "line/line_matrix_<size>.csv"
-        let line_file = format!("line/line_matrix_{}.csv", size);
-        for iter in 0..iterations {
-            let start = Instant::now();
-            if let Some(_res) = line_matrix_multiplication(&a, &b) {
-                let duration_sec = start.elapsed().as_nanos() as f64 / 1_000_000_000.0;
-                write_csv_record(
-                    &line_file,
-                    &[&iter.to_string(), &duration_sec.to_string()],
-                    &["iteration", "time_sec"],
-                );
-            } else {
-                eprintln!(
-                    "Warning: line_matrix_multiplication returned None for size {}.",
-                    size
-                );
-            }
-        }
+    if args.len() < 3 {
+        eprintln!(
+            "Usage:\n  For normal and line modes: {} <mode: n|l> <matrix_size>\n  For block mode: {} b <matrix_size> <block_size>",
+            args[0], args[0]
+        );
+        std::process::exit(1);
     }
-    println!("\nExperiment 1 complete. Results are saved in the 'basic' and 'line' folders.");
 
-    println!("\n2: Evaluating Block-Oriented Multiplication");
-    for &size in &block_sizes {
-        println!("\nWorking with a {}x{} matrix:", size, size);
-        let a = generate_matrix(size);
-        let b = generate_matrix(size);
-        for &block_size in &[128, 256, 512] {
-            // Block multiplication: results stored in "block/block_matrix_<size>_block_<block_size>.csv"
-            let block_file = format!("block/block_matrix_{}_block_{}.csv", size, block_size);
-            for iter in 0..iterations {
-                let start = Instant::now();
-                if let Some(_res) = block_matrix_multiplication(&a, &b, block_size) {
-                    let duration_sec = start.elapsed().as_nanos() as f64 / 1_000_000_000.0;
-                    write_csv_record(
-                        &block_file,
-                        &[&iter.to_string(), &duration_sec.to_string()],
-                        &["iteration", "time_sec"],
-                    );
-                } else {
-                    eprintln!(
-                        "Warning: block_matrix_multiplication returned None for size {} and block_size {}.",
-                        size, block_size
-                    );
-                }
-            }
-            println!(
-                "  Block size {} done ({} iterations recorded) for matrix size {}.",
-                block_size, iterations, size
+    let matrix_size: usize = args[2].parse().expect("Invalid matrix size");
+
+    let mode = if args[1].to_lowercase() == "b" {
+        if args.len() >= 4 {
+            let block_size: usize = args[3].parse().expect("Invalid block size");
+            Mode::Block(block_size)
+        } else {
+            eprintln!("Block mode requires a block size argument.");
+            std::process::exit(1);
+        }
+    } else {
+        Mode::from_args(&args[1], None).unwrap_or_else(|| {
+            eprintln!(
+                "Invalid mode. Use 'n' for normal, 'l' for line, or 'b' for block multiplication."
             );
-        }
-    }
-    println!("\nExperiment 2 complete. Results are saved in the 'block' folder.");
+            std::process::exit(1);
+        })
+    };
+
+    let a = Matrix::new(matrix_size);
+    let b = Matrix::new(matrix_size);
+
+    let start = Instant::now();
+    let _result = match mode {
+        Mode::Normal => a.multiply_basic(&b),
+        Mode::Line => a.multiply_line(&b),
+        Mode::Block(bs) => a.multiply_block(&b, bs),
+    };
+    let duration_sec = start.elapsed().as_nanos() as f64 / 1_000_000_000.0;
+    println!("time_sec");
+    println!("{}", duration_sec);
 }
