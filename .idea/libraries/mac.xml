@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="mac">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/assign1/testes/mac/rusttests.zip!/" />
+      <root url="jar://$PROJECT_DIR$/assign1/testes/mac/c++tests.zip!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

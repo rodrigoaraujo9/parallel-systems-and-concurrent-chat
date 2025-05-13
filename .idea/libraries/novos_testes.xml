@@ -1,0 +1,12 @@
+<component name="libraryTable">
+  <library name="novos_testes">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/assign1/testes/novos_testes/block_128.zip!/" />
+      <root url="jar://$PROJECT_DIR$/assign1/testes/novos_testes/block_256.zip!/" />
+      <root url="jar://$PROJECT_DIR$/assign1/testes/novos_testes/block_512.zip!/" />
+      <root url="jar://$PROJECT_DIR$/assign1/testes/novos_testes/line_normal.zip!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
