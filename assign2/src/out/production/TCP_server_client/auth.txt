@@ -1,6 +1,1 @@
-edu2:topxuxa
-rodri:pass
-bob:pass
-eve:pass
-edu:muitofixe
-alice:pass
+2d2d674c7150952fb81f5e1f8113c2d32e6167d2c567b3048d3b513a8b79c80f:d74ff0ee8da3b9806b18c877dbf29bbde50b5bd8e4dad7a3a725000feb82e8f1

@@ -3,6 +3,9 @@ import java.net.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.locks.*;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 public class Server {
     private static final int PORT = 8888;
@@ -32,21 +35,23 @@ public class Server {
         Lock writeLock = usersLock.writeLock();
         writeLock.lock();
         try {
-            if (Files.exists(Paths.get(USERS_FILE))) {
-                List<String> lines = Files.readAllLines(Paths.get(USERS_FILE));
-                for (String line : lines) {
+            Path p = Paths.get(USERS_FILE);
+            if (Files.exists(p)) {
+                for (String line : Files.readAllLines(p)) {
                     String[] parts = line.split(":");
                     if (parts.length == 2) {
+                        // already stored as hashedUser:hashedPass
                         users.put(parts[0], parts[1]);
                     }
                 }
                 System.out.println("Loaded " + users.size() + " users.");
             } else {
-                users.put("alice", "pass");
-                users.put("bob", "pass");
-                users.put("mariana", "pass");
+                // default users, hash both username and password
+                registerHashed("alice", "pass");
+                registerHashed("bob",   "pass");
+                registerHashed("mariana", "pass");
                 saveUsers();
-                System.out.println("Created default users.");
+                System.out.println("Created default users (hashed).");
             }
         } catch (IOException e) {
             System.err.println("Error loading users: " + e.getMessage());
@@ -60,8 +65,8 @@ public class Server {
         readLock.lock();
         try {
             List<String> lines = new ArrayList<>();
-            for (Map.Entry<String, String> entry : users.entrySet()) {
-                lines.add(entry.getKey() + ":" + entry.getValue());
+            for (Map.Entry<String,String> e : users.entrySet()) {
+                lines.add(e.getKey() + ":" + e.getValue());
             }
             Files.write(Paths.get(USERS_FILE), lines);
         } catch (IOException e) {
@@ -70,6 +75,15 @@ public class Server {
             readLock.unlock();
         }
     }
+
+    // helper to insert into the map (and later save)
+    private boolean registerHashed(String user, String pass) {
+        String hu = sha256(user);
+        String hp = sha256(pass);
+        users.put(hu, hp);
+        return true;
+    }
+
 
     private void createDefaultRooms() {
         Lock writeLock = roomsLock.writeLock();
@@ -175,25 +189,31 @@ public class Server {
     }
 
     private boolean authenticate(String user, String pass) {
+        String hu = sha256(user);
+        String hp = sha256(pass);
         usersLock.readLock().lock();
         try {
-            return pass.equals(users.get(user));
+            return hp.equals(users.get(hu));
         } finally {
             usersLock.readLock().unlock();
         }
     }
 
     private boolean registerUser(String user, String pass) {
+        String hu = sha256(user);
+        String hp = sha256(pass);
+
         usersLock.writeLock().lock();
         try {
-            if (users.containsKey(user)) return false;
-            users.put(user, pass);
+            if (users.containsKey(hu)) return false;
+            users.put(hu, hp);
             saveUsers();
             return true;
         } finally {
             usersLock.writeLock().unlock();
         }
     }
+
 
     private void sendRoomList(PrintWriter out) {
         roomsLock.readLock().lock();
@@ -205,6 +225,21 @@ public class Server {
             out.println(sb.toString());
         } finally {
             roomsLock.readLock().unlock();
+        }
+    }
+
+    private static String sha256(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            // convert to hex
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hashBytes) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not supported", e);
         }
     }
 
