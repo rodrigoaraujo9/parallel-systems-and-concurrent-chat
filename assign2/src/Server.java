@@ -75,8 +75,8 @@ public class Server {
         Lock writeLock = roomsLock.writeLock();
         writeLock.lock();
         try {
-            rooms.put("General", new Room("General", false, null));
-            rooms.put("Private", new Room("Private", false, null));
+            rooms.put("Sala", new Room("Sala", false, null));
+            rooms.put("Cozinha", new Room("Cozinha", false, null));
             System.out.println("Created default rooms: " + rooms.keySet());
         } finally {
             writeLock.unlock();
