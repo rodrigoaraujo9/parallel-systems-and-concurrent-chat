@@ -244,8 +244,8 @@ public class Server {
                 joinedLock.writeLock().unlock();
             }
             room.broadcast(username + " enters the room", null);
-            sendHistory(room);
             out.println("JOINED:" + roomName);
+            sendHistory(room);
         }
 
         void createRoom(String name, boolean isAI, String prompt) {
