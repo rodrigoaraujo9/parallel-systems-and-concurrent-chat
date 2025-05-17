@@ -2,25 +2,24 @@ import java.io.*;
 import java.net.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.locks.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import org.json.*;
 
 public class Server {
     private static final int PORT = 8888;
     private static final String USERS_FILE = "auth.txt";
     private static final String AI_ENDPOINT = "http://localhost:11434/api/generate";
 
-    // User credentials
     private final Map<String, String> users = new HashMap<>();
     private final ReadWriteLock usersLock = new ReentrantReadWriteLock();
 
-    // Chat rooms
     private final Map<String, Room> rooms = new HashMap<>();
     private final ReadWriteLock roomsLock = new ReentrantReadWriteLock();
 
-    // Connected clients
     private final Map<String, ClientHandler> connectedUsers = new HashMap<>();
     private final ReadWriteLock connectedLock = new ReentrantReadWriteLock();
 
@@ -37,18 +36,16 @@ public class Server {
         try {
             Path p = Paths.get(USERS_FILE);
             if (Files.exists(p)) {
-                for (String line : Files.readAllLines(p)) {
+                Files.readAllLines(p).forEach(line -> {
                     String[] parts = line.split(":");
                     if (parts.length == 2) {
-                        // already stored as hashedUser:hashedPass
                         users.put(parts[0], parts[1]);
                     }
-                }
+                });
                 System.out.println("Loaded " + users.size() + " users.");
             } else {
-                // default users, hash both username and password
                 registerHashed("alice", "pass");
-                registerHashed("bob",   "pass");
+                registerHashed("bob", "pass");
                 registerHashed("mariana", "pass");
                 saveUsers();
                 System.out.println("Created default users (hashed).");
@@ -65,9 +62,7 @@ public class Server {
         readLock.lock();
         try {
             List<String> lines = new ArrayList<>();
-            for (Map.Entry<String,String> e : users.entrySet()) {
-                lines.add(e.getKey() + ":" + e.getValue());
-            }
+            users.forEach((k, v) -> lines.add(k + ":" + v));
             Files.write(Paths.get(USERS_FILE), lines);
         } catch (IOException e) {
             System.err.println("Error saving users: " + e.getMessage());
@@ -76,7 +71,6 @@ public class Server {
         }
     }
 
-    // helper to insert into the map (and later save)
     private boolean registerHashed(String user, String pass) {
         String hu = sha256(user);
         String hp = sha256(pass);
@@ -84,13 +78,17 @@ public class Server {
         return true;
     }
 
-
     private void createDefaultRooms() {
         Lock writeLock = roomsLock.writeLock();
         writeLock.lock();
         try {
-            rooms.put("Sala", new Room("Sala", false, null));
-            rooms.put("Cozinha", new Room("Cozinha", false, null));
+            rooms.put("General", new Room("General", false, null));
+            rooms.put("Random", new Room("Random", false, null));
+
+            // Add a default AI room for testing
+            rooms.put("AI-Assistant", new Room("AI-Assistant", true,
+                    "You are a helpful AI assistant in a chat room. Be friendly, concise, and helpful to users."));
+
             System.out.println("Created default rooms: " + rooms.keySet());
         } finally {
             writeLock.unlock();
@@ -98,17 +96,14 @@ public class Server {
     }
 
     private void start() {
-        System.out.println("Server starting on port " + PORT);
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            System.out.println("Server successfully started and listening on port " + PORT);
+            System.out.println("Server listening on port " + PORT);
             while (true) {
                 Socket clientSocket = serverSocket.accept();
-                System.out.println("New connection accepted from " + clientSocket.getInetAddress());
                 Thread.startVirtualThread(() -> handleClient(clientSocket));
             }
         } catch (IOException e) {
             System.err.println("Server error: " + e.getMessage());
-            e.printStackTrace();
         }
     }
 
@@ -168,7 +163,7 @@ public class Server {
             handler.cleanup();
             System.out.println("User disconnected: " + username);
         } catch (IOException e) {
-            System.err.println("Error handling client: " + e.getMessage());
+            System.err.println("Client error: " + e.getMessage());
         }
     }
 
@@ -202,7 +197,6 @@ public class Server {
     private boolean registerUser(String user, String pass) {
         String hu = sha256(user);
         String hp = sha256(pass);
-
         usersLock.writeLock().lock();
         try {
             if (users.containsKey(hu)) return false;
@@ -214,14 +208,11 @@ public class Server {
         }
     }
 
-
     private void sendRoomList(PrintWriter out) {
         roomsLock.readLock().lock();
         try {
             StringBuilder sb = new StringBuilder("ROOMS:");
-            for (String room : rooms.keySet()) {
-                sb.append(room).append(",");
-            }
+            rooms.keySet().forEach(room -> sb.append(room).append(","));
             out.println(sb.toString());
         } finally {
             roomsLock.readLock().unlock();
@@ -232,18 +223,16 @@ public class Server {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] hashBytes = md.digest(input.getBytes(StandardCharsets.UTF_8));
-            // convert to hex
             StringBuilder sb = new StringBuilder();
             for (byte b : hashBytes) {
                 sb.append(String.format("%02x", b));
             }
             return sb.toString();
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not supported", e);
+            throw new RuntimeException("SHA-256 error", e);
         }
     }
 
-    // ClientHandler inner class
     private class ClientHandler {
         private final String username;
         private final Socket socket;
@@ -268,7 +257,7 @@ public class Server {
                 roomsLock.readLock().unlock();
             }
             if (room == null) {
-                out.println("ERROR:Room does not exist: " + roomName);
+                out.println("ERROR:Room not found: " + roomName);
                 return;
             }
             room.addUser(this);
@@ -278,7 +267,7 @@ public class Server {
             } finally {
                 joinedLock.writeLock().unlock();
             }
-            room.broadcast(username + " enters the room", null);
+            room.broadcast(username + " joined", null);
             out.println("JOINED:" + roomName);
             sendHistory(room);
         }
@@ -287,8 +276,12 @@ public class Server {
             roomsLock.writeLock().lock();
             try {
                 if (rooms.containsKey(name)) {
-                    out.println("ERROR:Room already exists: " + name);
+                    out.println("ERROR:Room exists: " + name);
                     return;
+                }
+                // Set a default prompt if not provided for AI rooms
+                if (isAI && (prompt == null || prompt.trim().isEmpty())) {
+                    prompt = "You are a helpful assistant named Bot in a chat room. Respond to users in a helpful and concise manner.";
                 }
                 Room r = new Room(name, isAI, prompt);
                 rooms.put(name, r);
@@ -312,7 +305,7 @@ public class Server {
                 if (room != null && joinedRooms.contains(roomName)) {
                     room.removeUser(this);
                     joinedRooms.remove(roomName);
-                    room.broadcast(username + " leaves the room", null);
+                    room.broadcast(username + " left", null);
                     out.println("LEFT:" + roomName);
                 }
             } finally {
@@ -347,16 +340,13 @@ public class Server {
         }
 
         private void sendHistory(Room room) {
-            List<String> hist = room.getHistory();
-            for (String h : hist) out.println("HISTORY:" + room.getName() + ":" + h);
+            room.getHistory().forEach(h -> out.println("HISTORY:" + room.getName() + ":" + h));
         }
 
         void cleanup() {
             joinedLock.writeLock().lock();
             try {
-                for (String rn : new ArrayList<>(joinedRooms)) {
-                    leaveRoom(rn);
-                }
+                new ArrayList<>(joinedRooms).forEach(this::leaveRoom);
             } finally {
                 joinedLock.writeLock().unlock();
             }
@@ -366,7 +356,6 @@ public class Server {
         }
     }
 
-    // Room inner class
     private class Room {
         private final String name;
         private final boolean aiRoom;
@@ -380,6 +369,11 @@ public class Server {
             this.name = name;
             this.aiRoom = aiRoom;
             this.aiPrompt = aiPrompt;
+
+            // If this is an AI room, send a welcome message from Bot
+            if (aiRoom) {
+                history.add("Bot: Hello! This is an AI-assisted chat room. I'm here to help with your conversation.");
+            }
         }
 
         String getName() { return name; }
@@ -407,16 +401,112 @@ public class Server {
             historyLock.writeLock().lock();
             try {
                 history.add(fmt);
+                // Trim history if it gets too long (optional)
+                if (history.size() > 100) {
+                    history.remove(0);
+                }
             } finally {
                 historyLock.writeLock().unlock();
             }
             usersLock.readLock().lock();
             try {
-                for (ClientHandler u : users) {
-                    u.receiveMessage(name, sender, msg);
-                }
+                users.forEach(u -> u.receiveMessage(name, sender, msg));
             } finally {
                 usersLock.readLock().unlock();
+            }
+
+            // Handle AI response if this is an AI room and the message is from a user (not the Bot)
+            if (aiRoom && sender != null && !sender.equals("Bot")) {
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        String botResponse = getAIResponse();
+                        if (botResponse != null && !botResponse.isEmpty()) {
+                            broadcast(botResponse, "Bot");
+                        }
+                    } catch (Exception e) {
+                        System.err.println("AI Response Error: " + e.getMessage());
+                        broadcast("Sorry, I encountered an error processing your request.", "Bot");
+                    }
+                });
+            }
+        }
+
+        private String buildPrompt() {
+            historyLock.readLock().lock();
+            try {
+                StringBuilder sb = new StringBuilder();
+
+                // Add system prompt
+                if (aiPrompt != null && !aiPrompt.isEmpty()) {
+                    sb.append(aiPrompt).append("\n\n");
+                } else {
+                    sb.append("You are a helpful assistant named Bot in a chat room. Respond to users in a helpful and concise manner.\n\n");
+                }
+
+                // Add chat history
+                List<String> contextHistory = history;
+                // If history is very long, take only the most recent messages
+                if (history.size() > 20) {
+                    contextHistory = history.subList(history.size() - 20, history.size());
+                }
+
+                for (String msg : contextHistory) {
+                    sb.append(msg).append("\n");
+                }
+
+                return sb.toString();
+            } finally {
+                historyLock.readLock().unlock();
+            }
+        }
+
+        private String getAIResponse() {
+            try {
+                URL url = new URL(AI_ENDPOINT);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+
+                // Create JSON request using org.json
+                JSONObject requestBody = new JSONObject();
+                requestBody.put("model", "llama3.2:1b");  // Use the 1B model as specified
+                requestBody.put("prompt", buildPrompt());
+                requestBody.put("stream", false);
+
+                // Send request
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(requestBody.toString().getBytes(StandardCharsets.UTF_8));
+                }
+
+                // Check response status
+                if (conn.getResponseCode() != 200) {
+                    System.err.println("HTTP error: " + conn.getResponseCode());
+                    System.err.println("Error message: " + conn.getResponseMessage());
+                    return "Sorry, I'm having trouble connecting to my AI service.";
+                }
+
+                // Read response
+                StringBuilder response = new StringBuilder();
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        response.append(line);
+                    }
+                }
+
+                // Parse JSON response using org.json
+                JSONObject jsonResponse = new JSONObject(response.toString());
+                String aiText = jsonResponse.getString("response");
+
+                // Process the response to clean it up if needed
+                aiText = aiText.trim();
+
+                return aiText;
+            } catch (Exception e) {
+                System.err.println("AI Request Error: " + e.getMessage());
+                e.printStackTrace();
+                return "Sorry, I encountered an error and couldn't process your request.";
             }
         }
 
