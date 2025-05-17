@@ -1,3 +1,4 @@
+// ----- Client.java -----
 import java.io.*;
 import java.net.*;
 import java.util.*;
@@ -14,9 +15,11 @@ public class Client {
     private String username;
     private String currentRoom;
     private boolean running = true;
+
     private final Set<String> joinedRooms = new HashSet<>();
-    private final ReadWriteLock roomsLock = new ReentrantReadWriteLock();
+    private final Set<String> availableRooms = new HashSet<>();
     private final Set<String> aiRooms = new HashSet<>();
+    private final ReadWriteLock roomsLock = new ReentrantReadWriteLock();
 
     public static void main(String[] args) {
         new Client().start();
@@ -44,70 +47,53 @@ public class Client {
     }
 
     private void authenticate() throws IOException {
-        System.out.println(in.readLine());
+        System.out.println(in.readLine());  // AUTH:Welcome...
         while (true) {
-            System.out.println("1. Login\n2. Register");
-            String choice = console.readLine();
-            if (choice.equals("1") || choice.equals("2")) {
-                System.out.print("Username: ");
-                String user = console.readLine();
-                System.out.print("Password: ");
-                String pass = console.readLine();
-                out.println((choice.equals("1") ? "LOGIN:" : "REGISTER:") + user + ":" + pass);
+            System.out.print("Username: ");
+            String user = console.readLine();
+            System.out.print("Password: ");
+            String pass = console.readLine();
+            out.println("LOGIN:" + user + ":" + pass);
+
+            String response = in.readLine();
+            if (response != null && response.startsWith("AUTH_OK:")) {
+                username = response.substring("AUTH_OK:".length());
+                System.out.println("Welcome, " + username + "!");
+                showHelp();
                 break;
+            } else {
+                String reason = (response != null && response.startsWith("AUTH_FAIL:"))
+                        ? response.substring("AUTH_FAIL:".length())
+                        : "Invalid response from server";
+                System.out.println("Auth failed: " + reason + ". Try again.\n");
             }
-            System.out.println("Invalid choice");
-        }
-        String response = in.readLine();
-        if (response.startsWith("AUTH_OK:")) {
-            username = response.substring(8);
-            System.out.println("Welcome " + username);
-            showHelp();
-        } else {
-            System.out.println("Auth failed: " + response.substring(9));
-            System.exit(1);
         }
     }
 
     private void receiveMessages() {
         try {
-            String message;
-            while (running && (message = in.readLine()) != null) {
-                if (message.startsWith("MESSAGE:")) {
-                    String[] parts = message.substring(8).split(":", 3);
-                    printMessage(parts[0], parts[1], parts[2]);
-                } else if (message.startsWith("SYSTEM:")) {
-                    String[] parts = message.substring(7).split(":", 2);
-                    printSystem(parts[0], parts[1]);
-                } else if (message.startsWith("ROOMS:")) {
-                    String rooms = message.substring(6);
-                    System.out.println("Available rooms: " + rooms);
-                    // Detect AI rooms by name prefix
-                    Arrays.stream(rooms.split(","))
-                            .filter(room -> room.startsWith("AI"))
-                            .forEach(aiRooms::add);
-                } else if (message.startsWith("JOINED:")) {
-                    currentRoom = message.substring(7);
-                    addJoinedRoom(currentRoom);
-                    System.out.println("Joined: " + currentRoom);
-                    // If joining an AI room, show a helpful message
-                    if (isAIRoom(currentRoom)) {
-                        System.out.println("[INFO] This is an AI room. All messages will get responses from the AI Bot.");
-                    }
-                } else if (message.startsWith("LEFT:")) {
-                    removeJoinedRoom(message.substring(5));
-                    System.out.println("Left: " + message.substring(5));
-                } else if (message.startsWith("CREATED:")) {
-                    String roomName = message.substring(8);
-                    System.out.println("Created room: " + roomName);
-                    if (roomName.startsWith("AI")) {
-                        aiRooms.add(roomName);
-                    }
-                } else if (message.startsWith("HISTORY:")) {
-                    String[] parts = message.substring(8).split(":", 2);
-                    System.out.println("[History] " + parts[1]);
+            String msg;
+            while (running && (msg = in.readLine()) != null) {
+                if (msg.startsWith("MESSAGE:")) {
+                    String[] p = msg.substring(8).split(":", 3);
+                    printMessage(p[0], p[1], p[2]);
+                } else if (msg.startsWith("SYSTEM:")) {
+                    String[] p = msg.substring(7).split(":", 2);
+                    printSystem(p[0], p[1]);
+                } else if (msg.startsWith("ROOMS:")) {
+                    updateAvailableRooms(msg.substring(6));
+                } else if (msg.startsWith("JOINED:")) {
+                    String room = msg.substring(7);
+                    addJoinedRoom(room);
+                    currentRoom = room;
+                    System.out.println("Joined: " + room);
+                    if (aiRooms.contains(room)) System.out.println("[INFO] AI room: bot will respond here.");
+                } else if (msg.startsWith("LEFT:")) {
+                    String room = msg.substring(5);
+                    removeJoinedRoom(room);
+                    System.out.println("Left: " + room);
                 } else {
-                    System.out.println(message);
+                    System.out.println(msg);
                 }
             }
         } catch (IOException e) {
@@ -116,159 +102,115 @@ public class Client {
     }
 
     private void handleInput() throws IOException {
-        String input;
-        while (running && (input = console.readLine()) != null) {
-            if (input.startsWith("/")) {
-                handleCommand(input);
+        String line;
+        while (running && (line = console.readLine()) != null) {
+            if (line.startsWith("/")) {
+                handleCommand(line);
             } else if (currentRoom != null) {
-                out.println("MESSAGE:" + currentRoom + ":" + input);
-                if (isAIRoom(currentRoom)) {
-                    System.out.println("Waiting for Bot response...");
-                }
+                out.println("MESSAGE:" + currentRoom + ":" + line);
+                if (aiRooms.contains(currentRoom)) System.out.println("Waiting for bot...");
             } else {
-                System.out.println("Join a room first");
+                System.out.println("Join a room first (/join <room>)");
             }
         }
     }
 
     private void handleCommand(String input) {
         String[] parts = input.substring(1).split(" ", 2);
-        String command = parts[0].toLowerCase();
+        String cmd = parts[0].toLowerCase();
         String arg = parts.length > 1 ? parts[1] : "";
-
-        switch (command) {
+        switch (cmd) {
             case "join":
-                if (!arg.isEmpty()) out.println("JOIN:" + arg);
-                else System.out.println("Usage: /join <room>");
+                if (!arg.isBlank()) out.println("JOIN:" + arg);
+                else System.out.println("Usage: /join <room> or /join AI:<name>:<prompt>");
                 break;
-
-            case "create":
-                if (!arg.isEmpty()) {
-                    if (arg.startsWith("AI:")) {
-                        String[] aiParts = arg.split(":", 3);
-                        if (aiParts.length == 3) {
-                            out.println("CREATE:AI:" + aiParts[1] + ":" + aiParts[2]);
-                            aiRooms.add(aiParts[1]);
-                        } else {
-                            System.out.println("Usage: /create AI:<name>:<prompt>");
-                        }
-                    } else {
-                        out.println("CREATE:" + arg);
-                    }
-                } else {
-                    System.out.println("Usage: /create <name> or /create AI:<name>:<prompt>");
-                }
-                break;
-
             case "leave":
                 if (currentRoom != null) out.println("LEAVE:" + currentRoom);
-                else System.out.println("Not in a room");
+                else System.out.println("Not in any room");
                 break;
-
-            case "switch":
-                if (!arg.isEmpty() && hasJoinedRoom(arg)) {
-                    currentRoom = arg;
-                    System.out.println("Switched to " + arg);
-                    if (isAIRoom(currentRoom)) {
-                        System.out.println("[INFO] This is an AI room. All messages will get responses from the AI Bot.");
-                    }
-                } else {
-                    System.out.println("Invalid room or not joined");
-                }
-                break;
-
             case "rooms":
-                System.out.println("Joined: " + getJoinedRooms());
+                showRooms();
                 break;
-
             case "logout":
                 running = false;
                 out.println("LOGOUT");
                 break;
-
             case "help":
                 showHelp();
                 break;
-
             default:
-                System.out.println("Unknown command");
+                System.out.println("Unknown command. Type /help");
         }
     }
 
     private void printMessage(String room, String sender, String content) {
-        String botPrefix = sender.equals("Bot") ? "🤖 " : "";
-
+        String prefix = sender.equals("Bot") ? "🤖 " : "";
         if (room.equals(currentRoom)) {
-            System.out.println(botPrefix + sender + ": " + content);
+            System.out.println(prefix + sender + ": " + content);
         } else {
-            System.out.println("[" + room + "] " + botPrefix + sender + ": " + content);
+            System.out.println("[" + room + "] " + prefix + sender + ": " + content);
         }
     }
 
-    private void printSystem(String room, String message) {
-        System.out.println("[" + room + "] System: " + message);
+    private void printSystem(String room, String msg) {
+        System.out.println("[" + room + "] System: " + msg);
     }
 
-    private void addJoinedRoom(String room) {
+    private void updateAvailableRooms(String list) {
         roomsLock.writeLock().lock();
         try {
-            joinedRooms.add(room);
+            availableRooms.clear();
+            aiRooms.clear();
+            for (String r : list.split(",")) {
+                if (r.isBlank()) continue;
+                availableRooms.add(r);
+                if (r.startsWith("AI")) aiRooms.add(r);
+            }
+            System.out.println("Available rooms: " + availableRooms);
         } finally {
             roomsLock.writeLock().unlock();
         }
     }
 
-    private void removeJoinedRoom(String room) {
+    private void showRooms() {
+        roomsLock.readLock().lock();
+        try {
+            System.out.println("Current: " + (currentRoom != null ? currentRoom : "(none)"));
+            System.out.println("Joined: " + joinedRooms);
+            System.out.println("Available: " + availableRooms);
+        } finally {
+            roomsLock.readLock().unlock();
+        }
+    }
+
+    private void addJoinedRoom(String r) {
+        roomsLock.writeLock().lock();
+        try { joinedRooms.add(r); }
+        finally { roomsLock.writeLock().unlock(); }
+    }
+
+    private void removeJoinedRoom(String r) {
         roomsLock.writeLock().lock();
         try {
-            joinedRooms.remove(room);
-            if (room.equals(currentRoom)) currentRoom = null;
+            joinedRooms.remove(r);
+            if (r.equals(currentRoom)) currentRoom = null;
         } finally {
             roomsLock.writeLock().unlock();
         }
-    }
-
-    private boolean hasJoinedRoom(String room) {
-        roomsLock.readLock().lock();
-        try {
-            return joinedRooms.contains(room);
-        } finally {
-            roomsLock.readLock().unlock();
-        }
-    }
-
-    private String getJoinedRooms() {
-        roomsLock.readLock().lock();
-        try {
-            return String.join(", ", joinedRooms);
-        } finally {
-            roomsLock.readLock().unlock();
-        }
-    }
-
-    private boolean isAIRoom(String roomName) {
-        return roomName != null && (roomName.startsWith("AI") || aiRooms.contains(roomName));
     }
 
     private void showHelp() {
         System.out.println("Commands:");
-        System.out.println("/join <room> - Join a room");
-        System.out.println("/create <name> - Create regular room");
-        System.out.println("/create AI:<name>:<prompt> - Create AI room with custom prompt");
-        System.out.println("/leave - Leave current room");
-        System.out.println("/switch <room> - Switch to joined room");
-        System.out.println("/rooms - List joined rooms");
-        System.out.println("/logout - Exit");
-        System.out.println("/help - Show this help");
+        System.out.println("/join <room> - join or create regular room");
+        System.out.println("/join AI:<name>:<prompt> - join or create AI room");
+        System.out.println("/leave - leave current room");
+        System.out.println("/rooms - show current/joined/available rooms");
+        System.out.println("/logout - exit");
+        System.out.println("/help - this menu");
     }
 
     private void cleanup() {
-        try {
-            if (socket != null) socket.close();
-            if (in != null) in.close();
-            if (out != null) out.close();
-        } catch (IOException e) {
-            System.err.println("Cleanup error: " + e.getMessage());
-        }
+        running = false;
+        try { if (socket != null) socket.close(); } catch (IOException ignored) {}
     }
 }
