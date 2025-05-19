@@ -21,6 +21,9 @@ public class Client {
     private final Set<String> aiRooms = new HashSet<>();
     private final ReadWriteLock roomsLock = new ReentrantReadWriteLock();
 
+    private static final String RESET = "\u001B[0m";
+    private static final String BOLD = "\u001B[1m";
+
     public static void main(String[] args) {
         new Client().start();
     }
@@ -79,25 +82,30 @@ public class Client {
                     printMessage(p[0], p[1], p[2]);
                 } else if (msg.startsWith("SYSTEM:")) {
                     String[] p = msg.substring(7).split(":", 2);
-                    printSystem(p[0], p[1]);
+                    printSystemMessage(p[0], p[1]);
                 } else if (msg.startsWith("ROOMS:")) {
                     updateAvailableRooms(msg.substring(6));
                 } else if (msg.startsWith("JOINED:")) {
                     String room = msg.substring(7);
                     addJoinedRoom(room);
                     currentRoom = room;
-                    System.out.println("Joined: " + room);
-                    if (aiRooms.contains(room)) System.out.println("[INFO] AI room: bot will respond here.");
+                    String joinedRoom = "Joined: ";
+                    System.out.println(printBold(joinedRoom) + room);
+                    if (aiRooms.contains(room)) {
+                        String aiRoom = "[INFO] AI room: ";
+                        System.out.println(printBold(aiRoom) + "bot will respond here.");
+                    }
                 } else if (msg.startsWith("LEFT:")) {
                     String room = msg.substring(5);
                     removeJoinedRoom(room);
-                    System.out.println("Left: " + room);
+                    String leftRoom = "Left: ";
+                    System.out.println(printBold(leftRoom) + room);
                 } else {
                     System.out.println(msg);
                 }
             }
         } catch (IOException e) {
-            if (running) System.err.println("Connection lost");
+            System.err.println("Connection lost");
         }
     }
 
@@ -110,7 +118,8 @@ public class Client {
                 out.println("MESSAGE:" + currentRoom + ":" + line);
                 if (aiRooms.contains(currentRoom)) System.out.println("Waiting for bot...");
             } else {
-                System.out.println("Join a room first (/join <room>)");
+                System.out.println("You cannot send messages at the moment.");
+                System.out.println("Please join a room first (/join <room>)");
             }
         }
     }
@@ -118,15 +127,26 @@ public class Client {
     private void handleCommand(String input) {
         String[] parts = input.substring(1).split(" ", 2);
         String cmd = parts[0].toLowerCase();
-        String arg = parts.length > 1 ? parts[1] : "";
+        String arg = parts.length > 1 ? parts[1].trim() : "";
+
         switch (cmd) {
             case "join":
-                if (!arg.isBlank()) out.println("JOIN:" + arg);
-                else System.out.println("Usage: /join <room> or /join AI:<name>:<prompt>");
+                if (!arg.isBlank()) {
+                    out.println("JOIN:" + arg);
+                    String joinRoom = "\nJoining room: ";
+                    System.out.println(printBold(joinRoom) + arg);
+                } else {
+                    System.out.println("Please specify a room to join.");
+                    System.out.println("Usage: /join <room>");
+                    System.out.println("Or for AI rooms: /join AI:<name>:<prompt>");
+                }
                 break;
             case "leave":
-                if (currentRoom != null) out.println("LEAVE:" + currentRoom);
-                else System.out.println("Not in any room");
+                if (currentRoom != null) {
+                    out.println("LEAVE:" + currentRoom);
+                    String leftRoom = "Leaving room: ";
+                    System.out.println(printBold(leftRoom) + currentRoom);
+                } else System.out.println("You're not currently in any room to leave.");
                 break;
             case "rooms":
                 showRooms();
@@ -134,26 +154,26 @@ public class Client {
             case "logout":
                 running = false;
                 out.println("LOGOUT");
+                System.out.println("Logging out... Goodbye!");
                 break;
             case "help":
                 showHelp();
                 break;
             default:
-                System.out.println("Unknown command. Type /help");
+                System.out.println("Unknown command.");
+                System.out.println("Type /help for a list of available commands.");
         }
     }
 
     private void printMessage(String room, String sender, String content) {
         String prefix = sender.equals("Bot") ? "🤖 " : "";
+        String prefixMessage;
         if (room.equals(currentRoom)) {
-            System.out.println(prefix + sender + ": " + content);
+            prefixMessage = prefix + sender + ": ";
         } else {
-            System.out.println("[" + room + "] " + prefix + sender + ": " + content);
+            prefixMessage = "[" + room + "]" + prefix + sender + ": ";
         }
-    }
-
-    private void printSystem(String room, String msg) {
-        System.out.println("[" + room + "] System: " + msg);
+        System.out.println(printBold(prefixMessage) + content);
     }
 
     private void updateAvailableRooms(String list) {
@@ -161,12 +181,19 @@ public class Client {
         try {
             availableRooms.clear();
             aiRooms.clear();
+
+            if (list == null || list.isBlank()) {
+                System.out.println("No rooms provided to update.");
+                return;
+            }
             for (String r : list.split(",")) {
-                if (r.isBlank()) continue;
-                availableRooms.add(r);
+                String room = r.trim();
+                if (room.isEmpty()) continue;
+                availableRooms.add(room);
                 if (r.startsWith("AI")) aiRooms.add(r);
             }
-            System.out.println("Available rooms: " + availableRooms);
+            String showAvailableRooms = "Available rooms: ";
+            System.out.println(printBold(showAvailableRooms) + availableRooms);
         } finally {
             roomsLock.writeLock().unlock();
         }
@@ -175,9 +202,10 @@ public class Client {
     private void showRooms() {
         roomsLock.readLock().lock();
         try {
-            System.out.println("Current: " + (currentRoom != null ? currentRoom : "(none)"));
-            System.out.println("Joined: " + joinedRooms);
-            System.out.println("Available: " + availableRooms);
+            String current = "Current: ", joined = "Joined: ", available = "Available: ";
+            System.out.println(printBold(current) + (currentRoom != null ? currentRoom : "(none)"));
+            System.out.println(printBold(joined) + joinedRooms);
+            System.out.println(printBold(available) + availableRooms);
         } finally {
             roomsLock.readLock().unlock();
         }
@@ -199,14 +227,25 @@ public class Client {
         }
     }
 
+
+    private String printBold(String message) {
+        return BOLD + message + RESET;
+    }
+
+    private void printSystemMessage(String room, String message) {
+        String roomBold = "[" + room + "] SYSTEM: ";
+        System.out.println(printBold(roomBold) + message);
+    }
+
     private void showHelp() {
-        System.out.println("Commands:");
-        System.out.println("/join <room> - join or create regular room");
-        System.out.println("/join AI:<name>:<prompt> - join or create AI room");
-        System.out.println("/leave - leave current room");
-        System.out.println("/rooms - show current/joined/available rooms");
-        System.out.println("/logout - exit");
-        System.out.println("/help - this menu");
+        String message = "\n==================== Available Commands ====================";
+        System.out.println(printBold(message));
+        System.out.println("/join <room>                - Join or create regular room");
+        System.out.println("/join AI:<name>:<prompt>    - Join or create AI room");
+        System.out.println("/leave                      - Leave current room");
+        System.out.println("/rooms                      - Show current/joined/available rooms");
+        System.out.println("/logout                     - Exit");
+        System.out.println("/help                       - Show this help menu\n");
     }
 
     private void cleanup() {
