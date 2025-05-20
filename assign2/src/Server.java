@@ -93,6 +93,7 @@ public class Server {
 
     private void start() {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            System.out.println("Server created successfully.");
             System.out.println("Server listening on port " + PORT);
             while (true) {
                 Socket clientSocket = serverSocket.accept();
@@ -108,7 +109,7 @@ public class Server {
                 BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
                 PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)
         ) {
-            out.println("AUTH:Welcome to chat server.");
+            out.println("👋 Welcome! Please enter your username and password to get started.");
             String line, username = null;
             while ((line = in.readLine()) != null) {
                 if (line.startsWith("LOGIN:")) {
@@ -121,14 +122,21 @@ public class Server {
                         usersLock.readLock().unlock();
                         if (firstTime) {
                             registerUser(user, pass);
+                            System.out.println("New user successfully registered: " + user);
+                            username = user;
+                            out.println("AUTH_NEW:");
+                            sendRoomList(out);
+                            break;
                         } else if (!hp.equals(users.get(hu))) {
+                            System.out.println("Login failed for user '" + user + "': Incorrect password.");
                             out.println("AUTH_FAIL:Invalid credentials");
-                            continue;
+                        } else {
+                            System.out.println("User logged in successfully: " + user);
+                            username = user;
+                            out.println("AUTH_OK:Welcome back, " + username + "!");
+                            sendRoomList(out);
+                            break;
                         }
-                        username = user;
-                        out.println("AUTH_OK:" + username);
-                        sendRoomList(out);
-                        break;
                     }
                 }
             }

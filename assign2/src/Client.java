@@ -1,4 +1,5 @@
 // ----- Client.java -----
+import javax.sound.midi.Soundbank;
 import java.io.*;
 import java.net.*;
 import java.util.*;
@@ -46,29 +47,44 @@ public class Client {
         in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
         out = new PrintWriter(socket.getOutputStream(), true);
         console = new BufferedReader(new InputStreamReader(System.in));
-        System.out.println("Connected to server");
+        System.out.println("Connected to server.\n");
     }
 
     private void authenticate() throws IOException {
         System.out.println(in.readLine());  // AUTH:Welcome...
         while (true) {
-            System.out.print("Username: ");
+            System.out.print("\nEnter your username: ");
             String user = console.readLine();
-            System.out.print("Password: ");
+            System.out.print("Enter your password: ");
             String pass = console.readLine();
             out.println("LOGIN:" + user + ":" + pass);
 
             String response = in.readLine();
-            if (response != null && response.startsWith("AUTH_OK:")) {
-                username = response.substring("AUTH_OK:".length());
-                System.out.println("Welcome, " + username + "!");
-                showHelp();
-                break;
+            if (response != null) {
+                if (response.startsWith("AUTH_NEW:")) {
+                    username = user;
+                    //System.out.println("\n" + response.substring("AUTH_NEW:".length()));
+                    //System.out.println(response.substring("AUTH_NEW:".length()));  // Welcome, new user ...
+                    System.out.println("\n\uD83C\uDF89 Welcome, new user " + username + "!");
+                    showHelp();
+                    break;
+                } else if (response.startsWith("AUTH_OK:")) {
+                    username = user;
+                    //System.out.println(response.substring("AUTH_OK:".length()));// Welcome back, ...
+                    System.out.println("\n✅ Logged in successfully!");
+                    System.out.println("Welcome back " + user + "!");
+                    showHelp();
+                    break;
+                } else if (response.startsWith("AUTH_FAIL:")) {
+                    String reason = response.substring("AUTH_FAIL:".length());
+                    System.out.println("\n⚠️ Error login in.");
+                    System.out.println(reason + ". " + "Try again.");
+                } else {
+                    System.out.println("Invalid response from server: " + response);
+                }
             } else {
-                String reason = (response != null && response.startsWith("AUTH_FAIL:"))
-                        ? response.substring("AUTH_FAIL:".length())
-                        : "Invalid response from server";
-                System.out.println("Auth failed: " + reason + ". Try again.\n");
+                System.out.println("Server disconnected.");
+                break;
             }
         }
     }
