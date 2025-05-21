@@ -43,6 +43,21 @@ public class Server {
         server.start();
     }
 
+    private void removeSessionForUser(String username) {
+        tokenLock.writeLock().lock();
+        try {
+            String token = userTokens.remove(username);
+            if (token != null) {
+                tokenToUser.remove(token);
+                tokenExpirations.remove(token);
+            }
+            saveSessions();
+        } finally {
+            tokenLock.writeLock().unlock();
+        }
+    }
+
+
     private void setupSSLContext() {
         File keyStoreFile = new File(KEYSTORE_PATH);
         if (!keyStoreFile.exists()) {
@@ -488,9 +503,15 @@ public class Server {
 
             try {
                 while ((line = in.readLine()) != null) {
-                    if ("LOGOUT".equals(line)) break;
+                    if ("LOGOUT".equals(line)) {
+                        // client asked to log out – kill their session
+                        removeSessionForUser(username);
+                        out.println("BYE");
+                        break;
+                    }
                     dispatch(line, handler);
                 }
+
             } catch (IOException e) {
                 System.err.println("Connection error for user " + username + ": " + e.getMessage());
                 // We don't remove user from rooms on connection errors
