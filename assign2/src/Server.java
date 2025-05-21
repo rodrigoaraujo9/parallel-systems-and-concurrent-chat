@@ -1,28 +1,75 @@
-// ----- Server.java -----
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.*;
+import java.security.cert.CertificateException;
 import java.util.*;
 import java.util.concurrent.locks.*;
 import org.json.*;
 
+import javax.net.ssl.*;
+
 public class Server {
     private static final int PORT = 8888;
     private static final String USERS_FILE = "auth.txt";
+    private static final String SESSION_FILE = "sessions.txt";
     private static final String AI_ENDPOINT = "http://localhost:11434/api/generate";
+    private static final String KEYSTORE_PATH = "chatserver.jks";
+    private static final String KEYSTORE_PASSWORD = "password";
 
+    private static final long TOKEN_EXPIRATION = 24 * 60 * 60 * 1000;
+
+    private SSLContext sslContext;
     private final Map<String, String> users = new HashMap<>();
     private final ReadWriteLock usersLock = new ReentrantReadWriteLock();
     private final Map<String, Room> rooms = new HashMap<>();
     private final ReadWriteLock roomsLock = new ReentrantReadWriteLock();
+    private final Map<String, ClientHandler> connectedUsers = new HashMap<>();
+    private final ReadWriteLock connectedLock = new ReentrantReadWriteLock();
+    private final Map<String, String> userTokens = new HashMap<>();
+    private final Map<String, String> tokenToUser = new HashMap<>();
+    private final Map<String, Long> tokenExpirations = new HashMap<>();
+    private final Map<String, Set<String>> userRooms = new HashMap<>();
+    private final ReadWriteLock tokenLock = new ReentrantReadWriteLock();
+    private final ReadWriteLock userRoomsLock = new ReentrantReadWriteLock();
 
     public static void main(String[] args) {
         Server server = new Server();
+        server.setupSSLContext();
         server.loadUsers();
+        server.loadSessions();
         server.createDefaultRooms();
         server.start();
+    }
+
+    private void setupSSLContext() {
+        File keyStoreFile = new File(KEYSTORE_PATH);
+        if (!keyStoreFile.exists()) {
+            System.err.println("Error: Keystore file " + KEYSTORE_PATH + " does not exist.");
+            System.err.println("Please run the following command to generate it:");
+            System.err.println("keytool -genkeypair -alias chatserver -keyalg RSA -keysize 2048 -validity 365 -keystore "
+                    + KEYSTORE_PATH + " -storepass " + KEYSTORE_PASSWORD);
+            System.exit(1);
+        }
+
+        try {
+            KeyStore ks = KeyStore.getInstance("JKS");
+            try (FileInputStream fis = new FileInputStream(KEYSTORE_PATH)) {
+                ks.load(fis, KEYSTORE_PASSWORD.toCharArray());
+            }
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(ks, KEYSTORE_PASSWORD.toCharArray());
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(ks);
+            sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
+        } catch (KeyStoreException | NoSuchAlgorithmException | CertificateException |
+                 IOException | UnrecoverableKeyException | KeyManagementException e) {
+            System.err.println("Failed to set up SSLContext: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
     }
 
     private void loadUsers() {
@@ -34,6 +81,7 @@ public class Server {
                     String[] parts = line.split(":");
                     if (parts.length == 2) users.put(parts[0], parts[1]);
                 }
+                System.out.println("Loaded " + users.size() + " users from file.");
             }
         } catch (IOException e) {
             System.err.println("Error loading users: " + e.getMessage());
@@ -52,6 +100,87 @@ public class Server {
             System.err.println("Error saving users: " + e.getMessage());
         } finally {
             usersLock.readLock().unlock();
+        }
+    }
+
+    private void loadSessions() {
+        tokenLock.writeLock().lock();
+        userRoomsLock.writeLock().lock();
+        try {
+            Path p = Paths.get(SESSION_FILE);
+            if (Files.exists(p)) {
+                for (String line : Files.readAllLines(p)) {
+                    String[] parts = line.split(":", 4);
+                    if (parts.length >= 3) {
+                        String username = parts[0];
+                        String token = parts[1];
+                        long expiration = Long.parseLong(parts[2]);
+
+                        // Skip expired tokens
+                        if (expiration < System.currentTimeMillis()) {
+                            continue;
+                        }
+
+                        userTokens.put(username, token);
+                        tokenToUser.put(token, username);
+                        tokenExpirations.put(token, expiration);
+
+                        // Load user's rooms if available
+                        if (parts.length == 4 && !parts[3].isEmpty()) {
+                            Set<String> rooms = new HashSet<>(Arrays.asList(parts[3].split(",")));
+                            userRooms.put(username, rooms);
+                        } else {
+                            userRooms.put(username, new HashSet<>());
+                        }
+                    }
+                }
+                System.out.println("Loaded " + userTokens.size() + " active sessions.");
+            }
+        } catch (IOException e) {
+            System.err.println("Error loading sessions: " + e.getMessage());
+        } finally {
+            userRoomsLock.writeLock().unlock();
+            tokenLock.writeLock().unlock();
+        }
+    }
+
+    private void saveSessions() {
+        tokenLock.readLock().lock();
+        userRoomsLock.readLock().lock();
+        try {
+            List<String> lines = new ArrayList<>();
+            for (Map.Entry<String, String> entry : userTokens.entrySet()) {
+                String username = entry.getKey();
+                String token = entry.getValue();
+                Long expiration = tokenExpirations.get(token);
+
+                if (expiration == null || expiration < System.currentTimeMillis()) {
+                    continue; // Skip expired tokens
+                }
+
+                StringBuilder line = new StringBuilder();
+                line.append(username).append(":").append(token).append(":").append(expiration);
+
+                // Add user's rooms
+                Set<String> rooms = userRooms.get(username);
+                if (rooms != null && !rooms.isEmpty()) {
+                    line.append(":");
+                    boolean first = true;
+                    for (String room : rooms) {
+                        if (!first) line.append(",");
+                        line.append(room);
+                        first = false;
+                    }
+                }
+
+                lines.add(line.toString());
+            }
+            Files.write(Paths.get(SESSION_FILE), lines);
+        } catch (IOException e) {
+            System.err.println("Error saving sessions: " + e.getMessage());
+        } finally {
+            userRoomsLock.readLock().unlock();
+            tokenLock.readLock().unlock();
         }
     }
 
@@ -91,10 +220,99 @@ public class Server {
         }
     }
 
+    private String generateToken() {
+        byte[] randomBytes = new byte[32];
+        new SecureRandom().nextBytes(randomBytes);
+        return Base64.getEncoder().encodeToString(randomBytes);
+    }
+
+    private String createUserToken(String username) {
+        String token = generateToken();
+        long expiration = System.currentTimeMillis() + TOKEN_EXPIRATION;
+
+        tokenLock.writeLock().lock();
+        try {
+            userTokens.put(username, token);
+            tokenToUser.put(token, username);
+            tokenExpirations.put(token, expiration);
+            saveSessions();
+        } finally {
+            tokenLock.writeLock().unlock();
+        }
+
+        return token;
+    }
+
+    private String validateToken(String token) {
+        if (token == null) return null;
+
+        tokenLock.readLock().lock();
+        try {
+            String username = tokenToUser.get(token);
+            if (username == null) return null;
+
+            Long expiration = tokenExpirations.get(token);
+            if (expiration == null || expiration < System.currentTimeMillis()) {
+                // Token expired, clean up in write lock
+                tokenLock.readLock().unlock();
+                tokenLock.writeLock().lock();
+                try {
+                    tokenToUser.remove(token);
+                    tokenExpirations.remove(token);
+                    userTokens.remove(username);
+                    saveSessions();
+                    tokenLock.readLock().lock();
+                } finally {
+                    tokenLock.writeLock().unlock();
+                }
+                return null;
+            }
+            return username;
+        } finally {
+            tokenLock.readLock().unlock();
+        }
+    }
+
     private void start() {
-        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            System.out.println("Server created successfully.");
-            System.out.println("Server listening on port " + PORT);
+        try {
+            SSLServerSocketFactory factory = sslContext.getServerSocketFactory();
+            SSLServerSocket serverSocket = (SSLServerSocket) factory.createServerSocket(PORT);
+
+            // Configure TLS parameters
+            String[] protocols = {"TLSv1.3", "TLSv1.2"};
+            serverSocket.setEnabledProtocols(protocols);
+
+            // Get supported cipher suites and prioritize secure ones
+            String[] supportedCipherSuites = serverSocket.getSupportedCipherSuites();
+            List<String> preferredCipherSuites = new ArrayList<>();
+
+            // Add forward secrecy ciphers first
+            for (String cipher : supportedCipherSuites) {
+                if (cipher.contains("ECDHE") || cipher.contains("DHE")) {
+                    preferredCipherSuites.add(cipher);
+                }
+            }
+
+            // Add remaining strong ciphers
+            for (String cipher : supportedCipherSuites) {
+                if (!preferredCipherSuites.contains(cipher) &&
+                        !cipher.contains("NULL") &&
+                        !cipher.contains("anon") &&
+                        !cipher.contains("RC4") &&
+                        !cipher.contains("DES") &&
+                        !cipher.contains("MD5")) {
+                    preferredCipherSuites.add(cipher);
+                }
+            }
+
+            serverSocket.setEnabledCipherSuites(preferredCipherSuites.toArray(new String[0]));
+
+            System.out.println("Secure server created successfully.");
+            System.out.println("Server listening on port " + PORT + " using TLS");
+
+            // Schedule periodic session cleanup
+            Thread.startVirtualThread(this::sessionCleanupTask);
+
             while (true) {
                 Socket clientSocket = serverSocket.accept();
                 Thread.startVirtualThread(() -> handleClient(clientSocket));
@@ -104,13 +322,56 @@ public class Server {
         }
     }
 
+    private void sessionCleanupTask() {
+        while (true) {
+            try {
+                Thread.sleep(3600000); // Run hourly
+                cleanupExpiredSessions();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    private void cleanupExpiredSessions() {
+        long now = System.currentTimeMillis();
+        tokenLock.writeLock().lock();
+        try {
+            List<String> expiredTokens = new ArrayList<>();
+            for (Map.Entry<String, Long> entry : tokenExpirations.entrySet()) {
+                if (entry.getValue() < now) {
+                    expiredTokens.add(entry.getKey());
+                }
+            }
+
+            for (String token : expiredTokens) {
+                String username = tokenToUser.get(token);
+                tokenToUser.remove(token);
+                tokenExpirations.remove(token);
+                if (username != null) {
+                    userTokens.remove(username);
+                }
+            }
+
+            if (!expiredTokens.isEmpty()) {
+                System.out.println("Cleaned up " + expiredTokens.size() + " expired sessions");
+                saveSessions();
+            }
+        } finally {
+            tokenLock.writeLock().unlock();
+        }
+    }
+
     private void handleClient(Socket clientSocket) {
         try (
                 BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
                 PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)
         ) {
-            out.println("👋 Welcome! Please enter your username and password to get started.");
+            out.println("👋 Welcome! Please login or provide a session token.");
             String line, username = null;
+            ClientHandler handler = null;
+
             while ((line = in.readLine()) != null) {
                 if (line.startsWith("LOGIN:")) {
                     String[] parts = line.substring(6).split(":", 2);
@@ -124,7 +385,19 @@ public class Server {
                             registerUser(user, pass);
                             System.out.println("New user successfully registered: " + user);
                             username = user;
-                            out.println("AUTH_NEW:");
+
+                            // Create session token for the new user
+                            String token = createUserToken(username);
+                            out.println("AUTH_NEW:" + token);
+
+                            // Initialize user's room set
+                            userRoomsLock.writeLock().lock();
+                            try {
+                                userRooms.put(username, new HashSet<>());
+                            } finally {
+                                userRoomsLock.writeLock().unlock();
+                            }
+
                             sendRoomList(out);
                             break;
                         } else if (!hp.equals(users.get(hu))) {
@@ -133,24 +406,99 @@ public class Server {
                         } else {
                             System.out.println("User logged in successfully: " + user);
                             username = user;
-                            out.println("AUTH_OK:Welcome back, " + username + "!");
+
+                            // Create or refresh session token
+                            String token = createUserToken(username);
+                            out.println("AUTH_OK:" + token);
                             sendRoomList(out);
                             break;
                         }
                     }
+                } else if (line.startsWith("TOKEN:")) {
+                    String token = line.substring(6);
+                    username = validateToken(token);
+
+                    if (username != null) {
+                        System.out.println("User resumed session via token: " + username);
+                        out.println("SESSION_RESUMED:" + username);
+
+                        // Check if user was in any rooms before disconnection
+                        userRoomsLock.readLock().lock();
+                        Set<String> savedRooms = new HashSet<>(userRooms.getOrDefault(username, new HashSet<>()));
+                        userRoomsLock.readLock().unlock();
+
+                        // Send room list first
+                        sendRoomList(out);
+
+                        // Create handler before reconnecting to rooms
+                        handler = new ClientHandler(username, clientSocket, in, out);
+
+                        // Register the handler with connection tracking
+                        connectedLock.writeLock().lock();
+                        try {
+                            // If there was a previous connection, clean it up
+                            ClientHandler oldHandler = connectedUsers.put(username, handler);
+                            if (oldHandler != null) {
+                                oldHandler.cleanup(false); // Clean up without removing from rooms
+                            }
+                        } finally {
+                            connectedLock.writeLock().unlock();
+                        }
+
+                        // Automatically rejoin saved rooms
+                        for (String roomName : savedRooms) {
+                            roomsLock.readLock().lock();
+                            Room room = rooms.get(roomName);
+                            roomsLock.readLock().unlock();
+
+                            if (room != null) {
+                                handler.silentlyJoinRoom(room);
+                                out.println("REJOINED:" + roomName);
+                            }
+                        }
+
+                        break;
+                    } else {
+                        System.out.println("Invalid or expired token attempt");
+                        out.println("AUTH_FAIL:Invalid or expired token");
+                    }
                 }
             }
+
             if (username == null) {
                 clientSocket.close();
                 return;
             }
 
-            ClientHandler handler = new ClientHandler(username, clientSocket, in, out);
-            while ((line = in.readLine()) != null) {
-                if ("LOGOUT".equals(line)) break;
-                dispatch(line, handler);
+            if (handler == null) {
+                handler = new ClientHandler(username, clientSocket, in, out);
+
+                // Register the handler with connection tracking
+                connectedLock.writeLock().lock();
+                try {
+                    // If there was a previous connection, clean it up
+                    ClientHandler oldHandler = connectedUsers.put(username, handler);
+                    if (oldHandler != null) {
+                        oldHandler.cleanup(false); // Clean up without removing from rooms
+                    }
+                } finally {
+                    connectedLock.writeLock().unlock();
+                }
             }
-            handler.cleanup();
+
+            try {
+                while ((line = in.readLine()) != null) {
+                    if ("LOGOUT".equals(line)) break;
+                    dispatch(line, handler);
+                }
+            } catch (IOException e) {
+                System.err.println("Connection error for user " + username + ": " + e.getMessage());
+                // We don't remove user from rooms on connection errors
+                // They will rejoin automatically with token
+            } finally {
+                handler.cleanup(true);
+            }
+
         } catch (IOException e) {
             System.err.println("Client error: " + e.getMessage());
         }
@@ -160,7 +508,12 @@ public class Server {
         roomsLock.readLock().lock();
         try {
             StringBuilder sb = new StringBuilder("ROOMS:");
-            for (String r : rooms.keySet()) sb.append(r).append(",");
+            for (String r : rooms.keySet()) {
+                Room room = rooms.get(r);
+                sb.append(r);
+                if (room.isAiRoom()) sb.append(":AI");
+                sb.append(",");
+            }
             out.println(sb.toString());
         } finally {
             roomsLock.readLock().unlock();
@@ -181,6 +534,14 @@ public class Server {
         } else if (line.startsWith("MESSAGE:")) {
             String[] parts = line.substring(8).split(":", 2);
             handler.sendMessage(parts[0], parts.length > 1 ? parts[1] : "");
+        } else if (line.startsWith("ACK:")) {
+            // Handle message acknowledgment
+            // This would be used for message delivery guarantees
+            String messageId = line.substring(4);
+            // Implementation could track received messages
+        } else if (line.startsWith("PING")) {
+            // Simple keepalive mechanism
+            handler.sendPong();
         }
     }
 
@@ -192,12 +553,30 @@ public class Server {
         private final PrintWriter out;
         private final Set<String> joinedRooms = new HashSet<>();
         private final ReadWriteLock joinedLock = new ReentrantReadWriteLock();
+        private boolean active = true;
 
         ClientHandler(String username, Socket socket, BufferedReader in, PrintWriter out) {
             this.username = username;
             this.socket = socket;
             this.in = in;
             this.out = out;
+        }
+
+        void sendPong() {
+            out.println("PONG");
+        }
+
+        void silentlyJoinRoom(Room room) {
+            room.addUser(this);
+            joinedLock.writeLock().lock();
+            try {
+                joinedRooms.add(room.getName());
+            } finally {
+                joinedLock.writeLock().unlock();
+            }
+
+            // Update user's room membership in persistent storage
+            updateUserRooms();
         }
 
         void createOrJoin(String roomName, boolean isAI, String prompt) {
@@ -214,15 +593,24 @@ public class Server {
             } finally {
                 roomsLock.writeLock().unlock();
             }
+
             // Join it
             roomsLock.readLock().lock();
             Room room = rooms.get(roomName);
             roomsLock.readLock().unlock();
+
             if (room != null) {
                 room.addUser(this);
                 joinedLock.writeLock().lock();
-                joinedRooms.add(roomName);
-                joinedLock.writeLock().unlock();
+                try {
+                    joinedRooms.add(roomName);
+                } finally {
+                    joinedLock.writeLock().unlock();
+                }
+
+                // Update user's room membership in persistent storage
+                updateUserRooms();
+
                 room.broadcast(username + " joined", null);
                 out.println("JOINED:" + roomName);
             } else {
@@ -234,12 +622,16 @@ public class Server {
             roomsLock.readLock().lock();
             Room room = rooms.get(roomName);
             roomsLock.readLock().unlock();
+
             joinedLock.writeLock().lock();
             try {
                 if (room != null && joinedRooms.remove(roomName)) {
                     room.removeUser(this);
                     room.broadcast(username + " left", null);
                     out.println("LEFT:" + roomName);
+
+                    // Update user's room membership in persistent storage
+                    updateUserRooms();
                 }
             } finally {
                 joinedLock.writeLock().unlock();
@@ -250,30 +642,79 @@ public class Server {
             roomsLock.readLock().lock();
             Room room = rooms.get(roomName);
             roomsLock.readLock().unlock();
+
             joinedLock.readLock().lock();
             try {
                 if (room != null && joinedRooms.contains(roomName)) {
-                    room.broadcast(msg, username);
+                    // Generate a message ID for acknowledgment
+                    String msgId = UUID.randomUUID().toString().substring(0, 8);
+                    room.broadcast(msg, username, msgId);
                 }
             } finally {
                 joinedLock.readLock().unlock();
             }
         }
 
-        void receiveMessage(String roomName, String sender, String msg) {
-            if (sender == null) out.println("SYSTEM:" + roomName + ":" + msg);
-            else out.println("MESSAGE:" + roomName + ":" + sender + ":" + msg);
+        void receiveMessage(String roomName, String sender, String msg, String msgId) {
+            if (active) {
+                if (sender == null) {
+                    out.println("SYSTEM:" + roomName + ":" + msg);
+                } else {
+                    out.println("MESSAGE:" + roomName + ":" + sender + ":" + msg + ":" + msgId);
+                }
+            }
         }
 
-        void cleanup() {
-            joinedLock.writeLock().lock();
+        private void updateUserRooms() {
+            userRoomsLock.writeLock().lock();
             try {
-                for (String r : new ArrayList<>(joinedRooms)) {
-                    leaveRoom(r);
+                joinedLock.readLock().lock();
+                try {
+                    userRooms.put(username, new HashSet<>(joinedRooms));
+                } finally {
+                    joinedLock.readLock().unlock();
                 }
+                saveSessions();
             } finally {
-                joinedLock.writeLock().unlock();
+                userRoomsLock.writeLock().unlock();
             }
+        }
+
+        void cleanup(boolean removeFromRooms) {
+            active = false;
+
+            // Only remove from connection tracking if this is a true disconnect
+            if (removeFromRooms) {
+                connectedLock.writeLock().lock();
+                try {
+                    // Only remove if this handler is still the current one
+                    if (connectedUsers.get(username) == this) {
+                        connectedUsers.remove(username);
+                    }
+                } finally {
+                    connectedLock.writeLock().unlock();
+                }
+            }
+
+            if (removeFromRooms) {
+                joinedLock.writeLock().lock();
+                try {
+                    for (String r : new ArrayList<>(joinedRooms)) {
+                        roomsLock.readLock().lock();
+                        Room room = rooms.get(r);
+                        roomsLock.readLock().unlock();
+
+                        if (room != null) {
+                            room.removeUser(this);
+                            room.broadcast(username + " disconnected", null);
+                        }
+                    }
+                    joinedRooms.clear();
+                } finally {
+                    joinedLock.writeLock().unlock();
+                }
+            }
+
             try {
                 socket.close();
             } catch (IOException ignored) {}
@@ -294,6 +735,14 @@ public class Server {
             this.aiPrompt = aiPrompt;
         }
 
+        String getName() {
+            return name;
+        }
+
+        boolean isAiRoom() {
+            return aiRoom;
+        }
+
         void addUser(ClientHandler ch) {
             usersLock.writeLock().lock();
             try { users.add(ch); }
@@ -307,15 +756,20 @@ public class Server {
         }
 
         void broadcast(String msg, String sender) {
-            // send to all
+            broadcast(msg, sender, UUID.randomUUID().toString().substring(0, 8));
+        }
+
+        void broadcast(String msg, String sender, String msgId) {
+            // Send to all
             usersLock.readLock().lock();
             try {
                 for (ClientHandler u : users) {
-                    u.receiveMessage(name, sender, msg);
+                    u.receiveMessage(name, sender, msg, msgId);
                 }
             } finally {
                 usersLock.readLock().unlock();
             }
+
             // if AI room and user message, get AI reply immediately
             if (aiRoom && sender != null && !sender.equals("Bot")) {
                 String aiReply = getAIResponse(msg);
@@ -330,22 +784,32 @@ public class Server {
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "application/json");
                 conn.setDoOutput(true);
+
                 JSONObject body = new JSONObject();
                 body.put("model", "llama3.2:1b");
                 // Basic prompt + last user message
                 body.put("prompt", aiPrompt + "\nUser: " + lastUserMsg + "\nBot:");
                 body.put("stream", false);
+
                 try (OutputStream os = conn.getOutputStream()) {
                     os.write(body.toString().getBytes(StandardCharsets.UTF_8));
                 }
-                if (conn.getResponseCode() != 200) return "Sorry, AI error.";
+
+                if (conn.getResponseCode() != 200) {
+                    System.err.println("AI API error: " + conn.getResponseCode());
+                    return "Sorry, AI error.";
+                }
+
                 StringBuilder resp = new StringBuilder();
                 try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
                     String line;
                     while ((line = br.readLine()) != null) resp.append(line);
                 }
+
                 return new JSONObject(resp.toString()).getString("response").trim();
             } catch (Exception e) {
+                System.err.println("AI request failed: " + e.getMessage());
+                e.printStackTrace();
                 return "Sorry, AI request failed.";
             }
         }

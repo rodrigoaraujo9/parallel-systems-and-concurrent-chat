@@ -1,21 +1,28 @@
-// ----- Client.java -----
-import javax.sound.midi.Soundbank;
 import java.io.*;
 import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.security.*;
+import java.security.cert.CertificateException;
 import java.util.*;
 import java.util.concurrent.locks.*;
+import javax.net.ssl.*;
 
 public class Client {
     private static final String SERVER_ADDRESS = "localhost";
     private static final int SERVER_PORT = 8888;
 
-    private Socket socket;
+    private static final String TRUSTSTORE_PATH = "chatserver.jks";
+    private static final String TRUSTSTORE_PASSWORD = "password";
+    private static final String TOKEN_FILE = "token.txt";
+
+    private SSLSocket socket;
     private BufferedReader in;
     private PrintWriter out;
     private BufferedReader console;
     private String username;
     private String currentRoom;
-    private boolean running = true;
+    private volatile boolean running = true;
 
     private final Set<String> joinedRooms = new HashSet<>();
     private final Set<String> availableRooms = new HashSet<>();
@@ -31,27 +38,63 @@ public class Client {
 
     public void start() {
         try {
-            connect();
-            authenticate();
-            Thread.startVirtualThread(this::receiveMessages);
-            handleInput();
-        } catch (IOException e) {
+            console = new BufferedReader(new InputStreamReader(System.in));
+            while (running) {
+                connectSecure();
+                authenticate();
+                Thread.startVirtualThread(this::receiveMessages);
+                handleInput();
+            }
+        } catch (Exception e) {
             System.err.println("Client error: " + e.getMessage());
         } finally {
             cleanup();
         }
     }
 
-    private void connect() throws IOException {
-        socket = new Socket(SERVER_ADDRESS, SERVER_PORT);
-        in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-        out = new PrintWriter(socket.getOutputStream(), true);
-        console = new BufferedReader(new InputStreamReader(System.in));
-        System.out.println("Connected to server.\n");
+    private void connectSecure() throws IOException {
+        try {
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            KeyStore ts = KeyStore.getInstance("JKS");
+            try (FileInputStream fis = new FileInputStream(TRUSTSTORE_PATH)) {
+                ts.load(fis, TRUSTSTORE_PASSWORD.toCharArray());
+            }
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(ts);
+            sslContext.init(null, tmf.getTrustManagers(), null);
+
+            SSLSocketFactory factory = sslContext.getSocketFactory();
+            socket = (SSLSocket) factory.createSocket(SERVER_ADDRESS, SERVER_PORT);
+            socket.startHandshake();
+
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            out = new PrintWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
+
+            // Read initial welcome
+            String welcome = in.readLine();
+            System.out.println(welcome);
+        } catch (NoSuchAlgorithmException | KeyStoreException | CertificateException | KeyManagementException e) {
+            throw new IOException("SSL setup failed: " + e.getMessage(), e);
+        }
     }
 
     private void authenticate() throws IOException {
-        System.out.println(in.readLine());  // AUTH:Welcome...
+        // Try token-based authentication first
+        String token = loadToken();
+        if (token != null) {
+            out.println("TOKEN:" + token);
+            String response = in.readLine();
+            if (response != null && response.startsWith("SESSION_RESUMED:")) {
+                username = response.substring("SESSION_RESUMED:".length());
+                System.out.println("✅ Session resumed for " + username + "!");
+                showHelp();
+                return;
+            } else {
+                System.out.println("⚠️ Could not resume session: " + response);
+            }
+        }
+
+        // Fallback to username/password login
         while (true) {
             System.out.print("\nEnter your username: ");
             String user = console.readLine();
@@ -60,31 +103,28 @@ public class Client {
             out.println("LOGIN:" + user + ":" + pass);
 
             String response = in.readLine();
-            if (response != null) {
-                if (response.startsWith("AUTH_NEW:")) {
-                    username = user;
-                    //System.out.println("\n" + response.substring("AUTH_NEW:".length()));
-                    //System.out.println(response.substring("AUTH_NEW:".length()));  // Welcome, new user ...
-                    System.out.println("\n\uD83C\uDF89 Welcome, new user " + username + "!");
-                    showHelp();
-                    break;
-                } else if (response.startsWith("AUTH_OK:")) {
-                    username = user;
-                    //System.out.println(response.substring("AUTH_OK:".length()));// Welcome back, ...
-                    System.out.println("\n✅ Logged in successfully!");
-                    System.out.println("Welcome back " + user + "!");
-                    showHelp();
-                    break;
-                } else if (response.startsWith("AUTH_FAIL:")) {
-                    String reason = response.substring("AUTH_FAIL:".length());
-                    System.out.println("\n⚠️ Error login in.");
-                    System.out.println(reason + ". " + "Try again.");
-                } else {
-                    System.out.println("Invalid response from server: " + response);
-                }
-            } else {
-                System.out.println("Server disconnected.");
+            if (response == null) throw new IOException("Server disconnected during authentication");
+
+            if (response.startsWith("AUTH_NEW:")) {
+                username = user;
+                String newToken = response.substring("AUTH_NEW:".length());
+                saveToken(newToken);
+                System.out.println("🎉 Welcome, new user " + username + "!");
+                showHelp();
                 break;
+            } else if (response.startsWith("AUTH_OK:")) {
+                username = user;
+                String newToken = response.substring("AUTH_OK:".length());
+                saveToken(newToken);
+                System.out.println("✅ Logged in successfully as " + username + "!");
+                showHelp();
+                break;
+            } else if (response.startsWith("AUTH_FAIL:")) {
+                String reason = response.substring("AUTH_FAIL:".length());
+                System.out.println("⚠️ Login failed: " + reason);
+                System.out.println("Please try again.");
+            } else {
+                System.out.println("Unexpected response: " + response);
             }
         }
     }
@@ -94,34 +134,56 @@ public class Client {
             String msg;
             while (running && (msg = in.readLine()) != null) {
                 if (msg.startsWith("MESSAGE:")) {
-                    String[] p = msg.substring(8).split(":", 3);
-                    printMessage(p[0], p[1], p[2]);
+                    String body = msg.substring("MESSAGE:".length());
+                    int idx = body.lastIndexOf(':');
+                    if (idx != -1) {
+                        body = body.substring(0, idx);
+                    }
+                    String[] parts = body.split(":", 3);
+                    if (parts.length == 3) {
+                        String room = parts[0], sender = parts[1], text = parts[2];
+                        printMessage(room, sender, text);
+                    }
                 } else if (msg.startsWith("SYSTEM:")) {
-                    String[] p = msg.substring(7).split(":", 2);
+                    String[] p = msg.substring("SYSTEM:".length()).split(":", 2);
                     printSystemMessage(p[0], p[1]);
                 } else if (msg.startsWith("ROOMS:")) {
-                    updateAvailableRooms(msg.substring(6));
+                    updateAvailableRooms(msg.substring("ROOMS:".length()));
                 } else if (msg.startsWith("JOINED:")) {
-                    String room = msg.substring(7);
-                    addJoinedRoom(room);
-                    currentRoom = room;
-                    String joinedRoom = "Joined: ";
-                    System.out.println(printBold(joinedRoom) + room);
-                    if (aiRooms.contains(room)) {
-                        String aiRoom = "[INFO] AI room: ";
-                        System.out.println(printBold(aiRoom) + "bot will respond here.");
-                    }
+                    handleJoinEvent(msg.substring("JOINED:".length()), false);
+                } else if (msg.startsWith("REJOINED:")) {
+                    handleJoinEvent(msg.substring("REJOINED:".length()), true);
                 } else if (msg.startsWith("LEFT:")) {
-                    String room = msg.substring(5);
+                    String room = msg.substring("LEFT:".length());
                     removeJoinedRoom(room);
-                    String leftRoom = "Left: ";
-                    System.out.println(printBold(leftRoom) + room);
+                    System.out.println(printBold("Left: ") + room);
                 } else {
                     System.out.println(msg);
                 }
             }
         } catch (IOException e) {
-            System.err.println("Connection lost");
+            if (running) {
+                System.err.println("⚠️ Connection lost. Attempting to reconnect...");
+                try {
+                    Thread.sleep(5000);
+                    connectSecure();
+                    authenticate();
+                    receiveMessages();
+                } catch (Exception ex) {
+                    System.err.println("Reconnect failed: " + ex.getMessage());
+                    running = false;
+                }
+            }
+        }
+    }
+
+    private void handleJoinEvent(String room, boolean rejoined) {
+        addJoinedRoom(room);
+        currentRoom = room;
+        String label = rejoined ? "Rejoined: " : "Joined: ";
+        System.out.println(printBold(label) + room);
+        if (aiRooms.contains(room)) {
+            System.out.println(printBold("[INFO] AI room: bot will respond here"));
         }
     }
 
@@ -132,10 +194,8 @@ public class Client {
                 handleCommand(line);
             } else if (currentRoom != null) {
                 out.println("MESSAGE:" + currentRoom + ":" + line);
-                if (aiRooms.contains(currentRoom)) System.out.println("Waiting for bot...");
             } else {
-                System.out.println("You cannot send messages at the moment.");
-                System.out.println("Please join a room first (/join <room>)");
+                System.out.println("You must join a room first (/join <room>)");
             }
         }
     }
@@ -149,47 +209,32 @@ public class Client {
             case "join":
                 if (!arg.isBlank()) {
                     out.println("JOIN:" + arg);
-                    String joinRoom = "\nJoining room: ";
-                    System.out.println(printBold(joinRoom) + arg);
+                    System.out.println(printBold("Joining: ") + arg);
                 } else {
-                    System.out.println("Please specify a room to join.");
-                    System.out.println("Usage: /join <room>");
-                    System.out.println("Or for AI rooms: /join AI:<name>:<prompt>");
+                    System.out.println("Usage: /join <room> or /join AI:<name>:<prompt>");
                 }
                 break;
             case "leave":
                 if (currentRoom != null) {
                     out.println("LEAVE:" + currentRoom);
-                    String leftRoom = "Leaving room: ";
-                    System.out.println(printBold(leftRoom) + currentRoom);
-                } else System.out.println("You're not currently in any room to leave.");
+                    System.out.println(printBold("Leaving: ") + currentRoom);
+                }
                 break;
-            case "rooms":
-                showRooms();
-                break;
+            case "rooms": showRooms(); break;
             case "logout":
                 running = false;
                 out.println("LOGOUT");
-                System.out.println("Logging out... Goodbye!");
                 break;
-            case "help":
-                showHelp();
-                break;
+            case "help": showHelp(); break;
             default:
-                System.out.println("Unknown command.");
-                System.out.println("Type /help for a list of available commands.");
+                System.out.println("Unknown command. Type /help");
         }
     }
 
     private void printMessage(String room, String sender, String content) {
         String prefix = sender.equals("Bot") ? "🤖 " : "";
-        String prefixMessage;
-        if (room.equals(currentRoom)) {
-            prefixMessage = prefix + sender + ": ";
-        } else {
-            prefixMessage = "[" + room + "]" + prefix + sender + ": ";
-        }
-        System.out.println(printBold(prefixMessage) + content);
+        String header = room.equals(currentRoom) ? prefix + sender + ": " : "[" + room + "]" + prefix + sender + ": ";
+        System.out.println(printBold(header) + content);
     }
 
     private void updateAvailableRooms(String list) {
@@ -197,19 +242,16 @@ public class Client {
         try {
             availableRooms.clear();
             aiRooms.clear();
-
-            if (list == null || list.isBlank()) {
-                System.out.println("No rooms provided to update.");
-                return;
+            if (list != null && !list.isBlank()) {
+                for (String token : list.split(",")) {
+                    if (token.isBlank()) continue;
+                    boolean isAI = token.endsWith(":AI");
+                    String roomName = isAI ? token.substring(0, token.length()-3) : token;
+                    availableRooms.add(roomName);
+                    if (isAI) aiRooms.add(roomName);
+                }
             }
-            for (String r : list.split(",")) {
-                String room = r.trim();
-                if (room.isEmpty()) continue;
-                availableRooms.add(room);
-                if (r.startsWith("AI")) aiRooms.add(r);
-            }
-            String showAvailableRooms = "Available rooms: ";
-            System.out.println(printBold(showAvailableRooms) + availableRooms);
+            System.out.println(printBold("Rooms: ") + availableRooms);
         } finally {
             roomsLock.writeLock().unlock();
         }
@@ -218,54 +260,64 @@ public class Client {
     private void showRooms() {
         roomsLock.readLock().lock();
         try {
-            String current = "Current: ", joined = "Joined: ", available = "Available: ";
-            System.out.println(printBold(current) + (currentRoom != null ? currentRoom : "(none)"));
-            System.out.println(printBold(joined) + joinedRooms);
-            System.out.println(printBold(available) + availableRooms);
+            System.out.println(printBold("Current: ") + (currentRoom != null ? currentRoom : "(none)"));
+            System.out.println(printBold("Joined: ") + joinedRooms);
+            System.out.println(printBold("Available: ") + availableRooms);
         } finally {
             roomsLock.readLock().unlock();
         }
     }
 
-    private void addJoinedRoom(String r) {
+    private void addJoinedRoom(String room) {
         roomsLock.writeLock().lock();
-        try { joinedRooms.add(r); }
+        try { joinedRooms.add(room); }
         finally { roomsLock.writeLock().unlock(); }
     }
 
-    private void removeJoinedRoom(String r) {
+    private void removeJoinedRoom(String room) {
         roomsLock.writeLock().lock();
         try {
-            joinedRooms.remove(r);
-            if (r.equals(currentRoom)) currentRoom = null;
-        } finally {
-            roomsLock.writeLock().unlock();
-        }
+            joinedRooms.remove(room);
+            if (room.equals(currentRoom)) currentRoom = null;
+        } finally { roomsLock.writeLock().unlock(); }
     }
 
-
-    private String printBold(String message) {
-        return BOLD + message + RESET;
-    }
-
-    private void printSystemMessage(String room, String message) {
-        String roomBold = "[" + room + "] SYSTEM: ";
-        System.out.println(printBold(roomBold) + message);
+    private void printSystemMessage(String room, String msg) {
+        String header = "[" + room + "] SYSTEM: ";
+        System.out.println(printBold(header) + msg);
     }
 
     private void showHelp() {
-        String message = "\n==================== Available Commands ====================";
-        System.out.println(printBold(message));
+        System.out.println(printBold("--- Commands ---"));
         System.out.println("/join <room>                - Join or create regular room");
         System.out.println("/join AI:<name>:<prompt>    - Join or create AI room");
         System.out.println("/leave                      - Leave current room");
-        System.out.println("/rooms                      - Show current/joined/available rooms");
+        System.out.println("/rooms                      - Show rooms");
         System.out.println("/logout                     - Exit");
-        System.out.println("/help                       - Show this help menu\n");
+        System.out.println("/help                       - Help\n");
+    }
+
+    private String printBold(String msg) { return BOLD + msg + RESET; }
+
+    private String loadToken() {
+        try {
+            Path p = Paths.get(TOKEN_FILE);
+            if (Files.exists(p)) {
+                return Files.readString(p).trim();
+            }
+        } catch (IOException ignored) {}
+        return null;
+    }
+
+    private void saveToken(String token) {
+        try {
+            Files.writeString(Paths.get(TOKEN_FILE), token, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            System.err.println("Could not save token: " + e.getMessage());
+        }
     }
 
     private void cleanup() {
-        running = false;
         try { if (socket != null) socket.close(); } catch (IOException ignored) {}
     }
 }
