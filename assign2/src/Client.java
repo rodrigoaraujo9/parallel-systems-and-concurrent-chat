@@ -1,3 +1,4 @@
+// Client.java
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
@@ -39,12 +40,13 @@ public class Client {
     public void start() {
         try {
             console = new BufferedReader(new InputStreamReader(System.in));
-            while (running) {
-                connectSecure();
-                authenticate();
-                Thread.startVirtualThread(this::receiveMessages);
-                handleInput();
-            }
+            // establish initial connection
+            connectSecure();
+            authenticate();
+            // start receiver thread
+            Thread.startVirtualThread(this::receiveMessages);
+            // handle user input on main thread
+            handleInput();
         } catch (Exception e) {
             System.err.println("Client error: " + e.getMessage());
         } finally {
@@ -59,7 +61,8 @@ public class Client {
             try (FileInputStream fis = new FileInputStream(TRUSTSTORE_PATH)) {
                 ts.load(fis, TRUSTSTORE_PASSWORD.toCharArray());
             }
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(
+                    TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(ts);
             sslContext.init(null, tmf.getTrustManagers(), null);
 
@@ -67,19 +70,35 @@ public class Client {
             socket = (SSLSocket) factory.createSocket(SERVER_ADDRESS, SERVER_PORT);
             socket.startHandshake();
 
-            in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-            out = new PrintWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
+            in = new BufferedReader(
+                    new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            out = new PrintWriter(
+                    new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
 
             // Read initial welcome
             String welcome = in.readLine();
             System.out.println(welcome);
-        } catch (NoSuchAlgorithmException | KeyStoreException | CertificateException | KeyManagementException e) {
+        } catch (NoSuchAlgorithmException | KeyStoreException |
+                 CertificateException | KeyManagementException e) {
             throw new IOException("SSL setup failed: " + e.getMessage(), e);
         }
     }
 
+    private void reconnect() {
+        while (running) {
+            try {
+                Thread.sleep(5000);
+                connectSecure();
+                authenticate();
+                System.err.println("✅ Reconnected successfully.");
+                return;
+            } catch (Exception e) {
+                System.err.println("Reconnect failed: " + e.getMessage());
+            }
+        }
+    }
+
     private void authenticate() throws IOException {
-        // Try token-based authentication first
         String token = loadToken();
         if (token != null) {
             out.println("TOKEN:" + token);
@@ -94,7 +113,6 @@ public class Client {
             }
         }
 
-        // Fallback to username/password login
         while (true) {
             System.out.print("\nEnter your username: ");
             String user = console.readLine();
@@ -107,22 +125,19 @@ public class Client {
 
             if (response.startsWith("AUTH_NEW:")) {
                 username = user;
-                String newToken = response.substring("AUTH_NEW:".length());
-                saveToken(newToken);
+                saveToken(response.substring("AUTH_NEW:".length()));
                 System.out.println("🎉 Welcome, new user " + username + "!");
                 showHelp();
                 break;
             } else if (response.startsWith("AUTH_OK:")) {
                 username = user;
-                String newToken = response.substring("AUTH_OK:".length());
-                saveToken(newToken);
+                saveToken(response.substring("AUTH_OK:".length()));
                 System.out.println("✅ Logged in successfully as " + username + "!");
                 showHelp();
                 break;
             } else if (response.startsWith("AUTH_FAIL:")) {
-                String reason = response.substring("AUTH_FAIL:".length());
-                System.out.println("⚠️ Login failed: " + reason);
-                System.out.println("Please try again.");
+                System.out.println("⚠️ Login failed: "
+                        + response.substring("AUTH_FAIL:".length()));
             } else {
                 System.out.println("Unexpected response: " + response);
             }
@@ -130,48 +145,42 @@ public class Client {
     }
 
     private void receiveMessages() {
-        try {
-            String msg;
-            while (running && (msg = in.readLine()) != null) {
-                if (msg.startsWith("MESSAGE:")) {
-                    String body = msg.substring("MESSAGE:".length());
-                    int idx = body.lastIndexOf(':');
-                    if (idx != -1) {
-                        body = body.substring(0, idx);
+        while (running) {
+            try {
+                String msg;
+                while ((msg = in.readLine()) != null) {
+                    if (msg.startsWith("MESSAGE:")) {
+                        String body = msg.substring("MESSAGE:".length());
+                        String[] parts = body.split(":", 4);
+                        if (parts.length == 4) {
+                            String room = parts[0], sender = parts[1],
+                                    text = parts[2], msgId = parts[3];
+                            printMessage(room, sender, text);
+                            out.println("ACK:" + msgId);  // <-- send ACK back
+                        }
+                    } else if (msg.startsWith("SYSTEM:")) {
+                        String[] p = msg.substring("SYSTEM:".length()).split(":", 2);
+                        printSystemMessage(p[0], p[1]);
+                    } else if (msg.startsWith("ROOMS:")) {
+                        updateAvailableRooms(msg.substring("ROOMS:".length()));
+                    } else if (msg.startsWith("JOINED:")) {
+                        handleJoinEvent(msg.substring("JOINED:".length()), false);
+                    } else if (msg.startsWith("REJOINED:")) {
+                        handleJoinEvent(msg.substring("REJOINED:".length()), true);
+                    } else if (msg.startsWith("LEFT:")) {
+                        String room = msg.substring("LEFT:".length());
+                        removeJoinedRoom(room);
+                        System.out.println(printBold("Left: ") + room);
+                    } else {
+                        System.out.println(msg);
                     }
-                    String[] parts = body.split(":", 3);
-                    if (parts.length == 3) {
-                        String room = parts[0], sender = parts[1], text = parts[2];
-                        printMessage(room, sender, text);
-                    }
-                } else if (msg.startsWith("SYSTEM:")) {
-                    String[] p = msg.substring("SYSTEM:".length()).split(":", 2);
-                    printSystemMessage(p[0], p[1]);
-                } else if (msg.startsWith("ROOMS:")) {
-                    updateAvailableRooms(msg.substring("ROOMS:".length()));
-                } else if (msg.startsWith("JOINED:")) {
-                    handleJoinEvent(msg.substring("JOINED:".length()), false);
-                } else if (msg.startsWith("REJOINED:")) {
-                    handleJoinEvent(msg.substring("REJOINED:".length()), true);
-                } else if (msg.startsWith("LEFT:")) {
-                    String room = msg.substring("LEFT:".length());
-                    removeJoinedRoom(room);
-                    System.out.println(printBold("Left: ") + room);
-                } else {
-                    System.out.println(msg);
                 }
-            }
-        } catch (IOException e) {
-            if (running) {
-                System.err.println("⚠️ Connection lost. Attempting to reconnect...");
-                try {
-                    Thread.sleep(5000);
-                    connectSecure();
-                    authenticate();
-                    receiveMessages();
-                } catch (Exception ex) {
-                    System.err.println("Reconnect failed: " + ex.getMessage());
-                    running = false;
+                // if we fall out of the inner loop, connection closed
+                throw new IOException("Connection stream closed");
+            } catch (IOException e) {
+                if (running) {
+                    System.err.println("⚠️ Connection lost. Attempting to reconnect...");
+                    reconnect();
                 }
             }
         }
@@ -233,7 +242,9 @@ public class Client {
 
     private void printMessage(String room, String sender, String content) {
         String prefix = sender.equals("Bot") ? "🤖 " : "";
-        String header = room.equals(currentRoom) ? prefix + sender + ": " : "[" + room + "]" + prefix + sender + ": ";
+        String header = room.equals(currentRoom)
+                ? prefix + sender + ": "
+                : "[" + room + "]" + prefix + sender + ": ";
         System.out.println(printBold(header) + content);
     }
 
@@ -246,7 +257,9 @@ public class Client {
                 for (String token : list.split(",")) {
                     if (token.isBlank()) continue;
                     boolean isAI = token.endsWith(":AI");
-                    String roomName = isAI ? token.substring(0, token.length()-3) : token;
+                    String roomName = isAI
+                            ? token.substring(0, token.length() - 3)
+                            : token;
                     availableRooms.add(roomName);
                     if (isAI) aiRooms.add(roomName);
                 }
@@ -260,7 +273,8 @@ public class Client {
     private void showRooms() {
         roomsLock.readLock().lock();
         try {
-            System.out.println(printBold("Current: ") + (currentRoom != null ? currentRoom : "(none)"));
+            System.out.println(printBold("Current: ")
+                    + (currentRoom != null ? currentRoom : "(none)"));
             System.out.println(printBold("Joined: ") + joinedRooms);
             System.out.println(printBold("Available: ") + availableRooms);
         } finally {
@@ -318,6 +332,7 @@ public class Client {
     }
 
     private void cleanup() {
-        try { if (socket != null) socket.close(); } catch (IOException ignored) {}
+        try { if (socket != null) socket.close(); }
+        catch (IOException ignored) {}
     }
 }
