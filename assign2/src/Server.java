@@ -5,33 +5,51 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.*;
 import java.security.cert.CertificateException;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.locks.*;
+import javax.crypto.*;
+import javax.crypto.spec.PBEKeySpec;
 import javax.net.ssl.*;
 import org.json.*;
 
 public class Server {
-    private static final int PORT = 8888;
-    private static final String USERS_FILE     = "auth.txt";
-    private static final String SESSION_FILE   = "sessions.txt";
-    private static final String AI_ENDPOINT    = "http://localhost:11434/api/generate";
-    private static final String KEYSTORE_PATH  = "chatserver.jks";
-    private static final String KEYSTORE_PASS  = "password";
-    private static final int    MAX_HISTORY    = 100;
-    private static final int    MAX_NAME_LEN   = 50;
-    private static final int    MAX_MSG_LEN    = 1000;
-    private static final long   TOKEN_EXPIRY   = 24L*60*60*1000;
+    private static final int    PORT            = 8888;
+    private static final String USERS_FILE      = "auth.txt";
+    private static final String SESSION_FILE    = "sessions.txt";
+    private static final String AI_ENDPOINT     = "http://localhost:11434/api/generate";
+    private static final String KEYSTORE_PATH   = "chatserver.jks";
+    private static final String KEYSTORE_PASS   = "password";
 
-    private final ReadWriteLock globalLock      = new ReentrantReadWriteLock();
-    private        SSLContext     sslContext;
-    private final Map<String,String>               users         = new HashMap<>();
-    private final Map<String,Room>                 rooms         = new HashMap<>();
-    private final Map<String,Set<ClientHandler>>   connectedUsers= new HashMap<>();
-    private final Map<String,String>               userTokens    = new HashMap<>();
-    private final Map<String,String>               tokenToUser   = new HashMap<>();
-    private final Map<String,Long>                 tokenExpires  = new HashMap<>();
-    private final Map<String,Set<String>>          userRooms     = new HashMap<>();
-    private final Map<String,List<QueuedMessage>>  messageBuffer = new HashMap<>();
+    private static final int    MAX_HISTORY     = 100;
+    private static final int    MAX_NAME_LEN    = 50;
+    private static final int    MAX_MSG_LEN     = 1000;
+    private static final long   TOKEN_EXPIRY    = 24L*60*60*1000; // 24h
+
+    // PBKDF2 parameters
+    private static final int    SALT_LENGTH     = 16;
+    private static final int    PBKDF2_ITER     = 65536;
+    private static final int    KEY_LENGTH      = 256;
+
+    // Rate-limiting parameters
+    private static final int    MAX_LOGIN_FAILS = 5;
+    private static final long   LOGIN_WINDOW_MS = 5 * 60 * 1000; // 5 min
+
+    private final ReadWriteLock                   globalLock        = new ReentrantReadWriteLock();
+    private       SSLContext                       sslContext;
+    // Credentials: username → (saltHex, hashHex)
+    private final Map<String,String>              userSalt          = new HashMap<>();
+    private final Map<String,String>              userHash          = new HashMap<>();
+    private final Map<String,Room>                rooms             = new HashMap<>();
+    private final Map<String,Set<ClientHandler>>  connectedUsers    = new HashMap<>();
+    private final Map<String,String>              userTokens        = new HashMap<>();
+    private final Map<String,String>              tokenToUser       = new HashMap<>();
+    private final Map<String,Long>                tokenExpires      = new HashMap<>();
+    private final Map<String,Set<String>>         userRooms         = new HashMap<>();
+    private final Map<String,List<QueuedMessage>> messageBuffer     = new HashMap<>();
+
+    // Rate-limiting: IP → list of failure timestamps
+    private final Map<String,List<Long>> loginFailuresByIp = Collections.synchronizedMap(new HashMap<>());
 
     public static void main(String[] args) {
         Server s = new Server();
@@ -53,9 +71,11 @@ public class Server {
             try (FileInputStream fis = new FileInputStream(KEYSTORE_PATH)) {
                 ks.load(fis, KEYSTORE_PASS.toCharArray());
             }
+
             KeyManagerFactory kmf = KeyManagerFactory.getInstance(
                     KeyManagerFactory.getDefaultAlgorithm());
             kmf.init(ks, KEYSTORE_PASS.toCharArray());
+
             TrustManagerFactory tmf = TrustManagerFactory.getInstance(
                     TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(ks);
@@ -74,10 +94,14 @@ public class Server {
             Path p = Paths.get(USERS_FILE);
             if (Files.exists(p)) {
                 for (String line : Files.readAllLines(p)) {
-                    String[] parts = line.split(":",2);
-                    if (parts.length==2) users.put(parts[0], parts[1]);
+                    // Format: username:saltHex:hashHex
+                    String[] parts = line.split(":", 3);
+                    if (parts.length == 3) {
+                        userSalt.put(parts[0], parts[1]);
+                        userHash.put(parts[0], parts[2]);
+                    }
                 }
-                System.out.println("Loaded " + users.size() + " users.");
+                System.out.println("Loaded " + userSalt.size() + " users.");
             }
         } catch (IOException e) {
             System.err.println("Error loading users: " + e.getMessage());
@@ -87,12 +111,17 @@ public class Server {
     }
 
     private void saveUsers() {
+        globalLock.readLock().lock();
         try {
             List<String> lines = new ArrayList<>();
-            users.forEach((u,p)-> lines.add(u+":"+p));
-            Files.write(Paths.get(USERS_FILE), lines);
+            for (String u : userSalt.keySet()) {
+                lines.add(u + ":" + userSalt.get(u) + ":" + userHash.get(u));
+            }
+            Files.write(Paths.get(USERS_FILE), lines, StandardCharsets.UTF_8);
         } catch (IOException e) {
             System.err.println("Error saving users: " + e.getMessage());
+        } finally {
+            globalLock.readLock().unlock();
         }
     }
 
@@ -102,15 +131,15 @@ public class Server {
             Path p = Paths.get(SESSION_FILE);
             if (Files.exists(p)) {
                 for (String line : Files.readAllLines(p)) {
-                    String[] parts = line.split(":",4);
-                    if (parts.length>=3) {
+                    String[] parts = line.split(":", 4);
+                    if (parts.length >= 3) {
                         String user = parts[0], token = parts[1];
                         long exp = Long.parseLong(parts[2]);
                         if (exp < System.currentTimeMillis()) continue;
                         userTokens.put(user, token);
                         tokenToUser.put(token, user);
                         tokenExpires.put(token, exp);
-                        Set<String> rms = parts.length==4 && !parts[3].isEmpty()
+                        Set<String> rms = (parts.length == 4 && !parts[3].isEmpty())
                                 ? new HashSet<>(Arrays.asList(parts[3].split(",")))
                                 : new HashSet<>();
                         userRooms.put(user, rms);
@@ -127,13 +156,14 @@ public class Server {
     }
 
     private void saveSessions() {
+        globalLock.readLock().lock();
         try {
             List<String> lines = new ArrayList<>();
             for (var entry : userTokens.entrySet()) {
                 String u = entry.getKey();
                 String t = entry.getValue();
                 Long exp = tokenExpires.get(t);
-                if (exp==null || exp < System.currentTimeMillis()) continue;
+                if (exp == null || exp < System.currentTimeMillis()) continue;
                 StringBuilder sb = new StringBuilder()
                         .append(u).append(":").append(t).append(":").append(exp);
                 Set<String> rms = userRooms.get(u);
@@ -142,20 +172,21 @@ public class Server {
                 }
                 lines.add(sb.toString());
             }
-            Files.write(Paths.get(SESSION_FILE), lines);
+            Files.write(Paths.get(SESSION_FILE), lines, StandardCharsets.UTF_8);
         } catch (IOException e) {
             System.err.println("Error saving sessions: " + e.getMessage());
+        } finally {
+            globalLock.readLock().unlock();
         }
     }
 
     private void createDefaultRooms() {
         globalLock.writeLock().lock();
         try {
-            rooms.put("General", new Room("General", false, null));
-            rooms.put("Random",  new Room("Random",  false, null));
-            rooms.put("AI-Assistant",
-                    new Room("AI-Assistant", true,
-                            "You are a helpful AI assistant in a chat room."));
+            rooms.put("General",      new Room("General",      false, null));
+            rooms.put("Random",       new Room("Random",       false, null));
+            rooms.put("AI-Assistant", new Room("AI-Assistant", true,
+                    "You are a helpful AI assistant in a chat room."));
         } finally {
             globalLock.writeLock().unlock();
         }
@@ -167,8 +198,14 @@ public class Server {
                     sslContext.getServerSocketFactory();
             SSLServerSocket serverSocket =
                     (SSLServerSocket) factory.createServerSocket(PORT);
-            serverSocket.setEnabledProtocols(
-                    new String[]{"TLSv1.3","TLSv1.2"});
+
+            // Restrict TLS versions
+            serverSocket.setEnabledProtocols(new String[]{"TLSv1.3","TLSv1.2"});
+            // Restrict to strong cipher suites
+            serverSocket.setEnabledCipherSuites(new String[]{
+                    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+            });
 
             System.out.println("Server listening on port " + PORT);
             Thread.startVirtualThread(this::sessionCleanupTask);
@@ -185,7 +222,7 @@ public class Server {
     private void sessionCleanupTask() {
         while (true) {
             try {
-                Thread.sleep(3_600_000);
+                Thread.sleep(3_600_000); // 1h
                 cleanupExpiredSessions();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -217,6 +254,8 @@ public class Server {
     }
 
     private void handleClient(Socket sock) {
+        String clientIp = sock.getInetAddress().getHostAddress();
+
         try (BufferedReader in = new BufferedReader(
                 new InputStreamReader(sock.getInputStream()));
              PrintWriter out = new PrintWriter(
@@ -226,58 +265,93 @@ public class Server {
             String line, user = null;
             ClientHandler handler = null;
 
-            // Authentication
+            // Authentication phase
             while ((line = in.readLine()) != null) {
                 if (line.startsWith("LOGIN:")) {
-                    String[] parts = line.substring(6).split(":",2);
-                    if (parts.length==2) {
-                        String u = sanitizeInput(parts[0], MAX_NAME_LEN);
-                        String p = parts[1];
-                        if (!isValidUsername(u)) {
-                            out.println("AUTH_FAIL:Invalid username format");
+                    // Rate-limit by IP
+                    long now = System.currentTimeMillis();
+                    synchronized (loginFailuresByIp) {
+                        var fails = loginFailuresByIp.computeIfAbsent(clientIp, k -> new ArrayList<>());
+                        fails.removeIf(ts -> ts < now - LOGIN_WINDOW_MS);
+                        if (fails.size() >= MAX_LOGIN_FAILS) {
+                            out.println("AUTH_FAIL:Too many login attempts; please try later");
                             continue;
                         }
-                        globalLock.writeLock().lock();
-                        try {
-                            boolean isNew = !users.containsKey(u);
-                            if (isNew) {
-                                registerUser(u,p);
-                                user = u;
-                                String tok = createUserToken(u);
-                                out.println("AUTH_NEW:" + tok);
-                                userRooms.put(u, new HashSet<>());
-                                messageBuffer.put(u,new ArrayList<>());
-                                sendRoomList(out);
-                                break;
-                            } else if (!sha256(p).equals(users.get(u))) {
+                    }
+
+                    String[] parts = line.substring(6).split(":", 2);
+                    if (parts.length != 2) {
+                        out.println("AUTH_FAIL:Invalid login format");
+                        recordFailure(clientIp, now);
+                        continue;
+                    }
+                    String u = sanitizeInput(parts[0], MAX_NAME_LEN);
+                    String p = parts[1];
+
+                    if (!isValidUsername(u)) {
+                        out.println("AUTH_FAIL:Invalid username format");
+                        recordFailure(clientIp, now);
+                        continue;
+                    }
+
+                    globalLock.writeLock().lock();
+                    try {
+                        boolean isNew = !userSalt.containsKey(u);
+                        if (isNew) {
+                            // Register with PBKDF2
+                            byte[] salt = new byte[SALT_LENGTH];
+                            new SecureRandom().nextBytes(salt);
+                            byte[] hash = pbkdf2(p.toCharArray(), salt);
+                            String saltHex = toHex(salt), hashHex = toHex(hash);
+
+                            userSalt.put(u, saltHex);
+                            userHash.put(u, hashHex);
+                            saveUsers();
+
+                            user = u;
+                            String tok = createUserToken(u);
+                            out.println("AUTH_NEW:" + tok);
+                            userRooms.put(u, new HashSet<>());
+                            messageBuffer.put(u, new ArrayList<>());
+                            sendRoomList(out);
+                            break;
+                        } else {
+                            // Verify password
+                            byte[] salt = fromHex(userSalt.get(u));
+                            byte[] expected = fromHex(userHash.get(u));
+                            byte[] actual = pbkdf2(p.toCharArray(), salt);
+
+                            if (!Arrays.equals(expected, actual)) {
                                 out.println("AUTH_FAIL:Invalid credentials");
+                                recordFailure(clientIp, now);
                             } else {
                                 user = u;
                                 String tok = createUserToken(u);
                                 out.println("AUTH_OK:" + tok);
-                                messageBuffer.putIfAbsent(u,new ArrayList<>());
+                                messageBuffer.putIfAbsent(u, new ArrayList<>());
                                 sendRoomList(out);
                                 break;
                             }
-                        } finally {
-                            globalLock.writeLock().unlock();
                         }
+                    } finally {
+                        globalLock.writeLock().unlock();
                     }
+
                 } else if (line.startsWith("TOKEN:")) {
                     String tok = line.substring(6);
                     String u = validateToken(tok);
                     if (u != null) {
                         user = u;
                         out.println("SESSION_RESUMED:" + u);
+
                         globalLock.writeLock().lock();
                         try {
-                            messageBuffer.putIfAbsent(u,new ArrayList<>());
+                            messageBuffer.putIfAbsent(u, new ArrayList<>());
                             sendRoomList(out);
-                            handler = new ClientHandler(u,sock,in,out);
-                            // add to set, don't evict old
-                            connectedUsers.computeIfAbsent(u,k->new HashSet<>()).add(handler);
+                            handler = new ClientHandler(u, sock, in, out);
+                            connectedUsers.computeIfAbsent(u, k -> new HashSet<>()).add(handler);
 
-                            // rejoin saved rooms
+                            // Rejoin saved rooms
                             for (String rn : userRooms.getOrDefault(u, Set.of())) {
                                 Room r = rooms.get(rn);
                                 if (r != null) {
@@ -296,15 +370,17 @@ public class Server {
                     }
                 }
             }
+
             if (user == null) {
                 sock.close();
                 return;
             }
+
             if (handler == null) {
                 globalLock.writeLock().lock();
                 try {
-                    handler = new ClientHandler(user,sock,in,out);
-                    connectedUsers.computeIfAbsent(user,k->new HashSet<>()).add(handler);
+                    handler = new ClientHandler(user, sock, in, out);
+                    connectedUsers.computeIfAbsent(user, k -> new HashSet<>()).add(handler);
                 } finally {
                     globalLock.writeLock().unlock();
                 }
@@ -320,6 +396,7 @@ public class Server {
                 dispatch(line, handler);
             }
             handler.cleanup(true);
+
         } catch (IOException e) {
             System.err.println("Client error: " + e.getMessage());
         }
@@ -339,22 +416,22 @@ public class Server {
         if (line.startsWith("JOIN:")) {
             String arg = line.substring(5);
             if (arg.startsWith("AI:")) {
-                String[] p = arg.split(":",3);
-                if (p.length>=2) {
+                String[] p = arg.split(":", 3);
+                if (p.length >= 2) {
                     String rn = sanitizeInput(p[1], MAX_NAME_LEN);
                     if (isValidRoomName(rn)) {
-                        h.createOrJoin(rn,true,p.length==3?p[2]:null);
+                        h.createOrJoin(rn, true, p.length == 3 ? p[2] : null);
                     }
                 }
             } else {
                 String rn = sanitizeInput(arg, MAX_NAME_LEN);
-                if (isValidRoomName(rn)) h.createOrJoin(rn,false,null);
+                if (isValidRoomName(rn)) h.createOrJoin(rn, false, null);
             }
         } else if (line.startsWith("LEAVE:")) {
             h.leaveRoom(line.substring(6));
         } else if (line.startsWith("MESSAGE:")) {
-            String[] p = line.substring(8).split(":",2);
-            if (p.length==2) {
+            String[] p = line.substring(8).split(":", 2);
+            if (p.length == 2) {
                 String msg = sanitizeInput(p[1], MAX_MSG_LEN);
                 h.sendMessage(p[0], msg);
             }
@@ -363,19 +440,20 @@ public class Server {
         }
     }
 
-    // Session/token management...
+    // --- Session/token management ---
     private String validateToken(String t) {
-        if (t==null) return null;
+        if (t == null) return null;
         globalLock.readLock().lock();
         try {
             String u = tokenToUser.get(t);
             Long exp = tokenExpires.get(t);
-            if (u==null || exp==null || exp < System.currentTimeMillis()) return null;
+            if (u == null || exp == null || exp < System.currentTimeMillis()) return null;
             return u;
         } finally {
             globalLock.readLock().unlock();
         }
     }
+
     private String createUserToken(String u) {
         globalLock.writeLock().lock();
         try {
@@ -392,11 +470,12 @@ public class Server {
             globalLock.writeLock().unlock();
         }
     }
+
     private void removeSessionForUser(String u) {
         globalLock.writeLock().lock();
         try {
             String t = userTokens.remove(u);
-            if (t!=null) {
+            if (t != null) {
                 tokenToUser.remove(t);
                 tokenExpires.remove(t);
             }
@@ -406,44 +485,65 @@ public class Server {
         }
     }
 
-    private boolean isValidUsername(String u) {
-        if (u==null) return false;
-        String clean = u.replaceAll("[^a-zA-Z0-9_-]","").trim();
-        return clean.length()>=3 && clean.length()<=MAX_NAME_LEN;
-    }
-    private boolean isValidRoomName(String rn) {
-        if (rn==null) return false;
-        String c = rn.replaceAll("[^a-zA-Z0-9_-]","").trim();
-        return c.length()>=1 && c.length()<=MAX_NAME_LEN;
-    }
-    private String sanitizeInput(String s,int max) {
-        if (s==null) return "";
-        String cleaned = s.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]","").trim();
-        return cleaned.length()>max?cleaned.substring(0,max):cleaned;
-    }
-    private String sha256(String in) {
+    // --- PBKDF2 helpers ---
+    private static byte[] pbkdf2(char[] password, byte[] salt) {
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] d = md.digest(in.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte b: d) sb.append(String.format("%02x",b));
-            return sb.toString();
+            PBEKeySpec spec = new PBEKeySpec(password, salt, PBKDF2_ITER, KEY_LENGTH);
+            SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            return skf.generateSecret(spec).getEncoded();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
-    private boolean registerUser(String u,String p) {
-        users.put(u, sha256(p));
-        saveUsers();
-        return true;
+
+    private static String toHex(byte[] data) {
+        StringBuilder sb = new StringBuilder(data.length * 2);
+        for (byte b : data) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 
-    // Represents queued offline messages
+    private static byte[] fromHex(String hex) {
+        int len = hex.length();
+        byte[] out = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            out[i / 2] = (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
+        }
+        return out;
+    }
+
+    // --- Rate-limiting helper ---
+    private void recordFailure(String ip, long timestamp) {
+        synchronized (loginFailuresByIp) {
+            loginFailuresByIp.computeIfAbsent(ip, k -> new ArrayList<>()).add(timestamp);
+        }
+    }
+
+    // --- Validation & sanitization ---
+    private boolean isValidUsername(String u) {
+        if (u == null) return false;
+        String clean = u.replaceAll("[^a-zA-Z0-9_-]", "").trim();
+        return clean.length() >= 3 && clean.length() <= MAX_NAME_LEN;
+    }
+
+    private boolean isValidRoomName(String rn) {
+        if (rn == null) return false;
+        String c = rn.replaceAll("[^a-zA-Z0-9_-]", "").trim();
+        return c.length() >= 1 && c.length() <= MAX_NAME_LEN;
+    }
+
+    private String sanitizeInput(String s, int max) {
+        if (s == null) return "";
+        String cleaned = s.replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "").trim();
+        return cleaned.length() > max ? cleaned.substring(0, max) : cleaned;
+    }
+
+    // --- Nested classes ---
     private static class QueuedMessage {
         final String room, sender, msg, msgId;
         final long timestamp;
         QueuedMessage(String r, String s, String m, String id) {
-            room=r; sender=s; msg=m; msgId=id; timestamp=System.currentTimeMillis();
+            room = r; sender = s; msg = m; msgId = id;
+            timestamp = System.currentTimeMillis();
         }
     }
 
@@ -458,7 +558,7 @@ public class Server {
 
         ClientHandler(String user, Socket sock,
                       BufferedReader r, PrintWriter w) {
-            username=user; socket=sock; in=r; out=w;
+            username = user; socket = sock; in = r; out = w;
         }
 
         void handleAck(String id) {
@@ -477,8 +577,8 @@ public class Server {
             globalLock.writeLock().lock();
             try {
                 if (!rooms.containsKey(name)) {
-                    rooms.put(name, new Room(name,isAI,
-                            prompt==null||prompt.isBlank()
+                    rooms.put(name, new Room(name, isAI,
+                            prompt == null || prompt.isBlank()
                                     ? "You are a helpful assistant named Bot."
                                     : prompt));
                     out.println("CREATED:" + name);
@@ -515,7 +615,7 @@ public class Server {
             try {
                 Room room = rooms.get(roomName);
                 if (room != null && joined.contains(roomName)) {
-                    String id = UUID.randomUUID().toString().substring(0,8);
+                    String id = UUID.randomUUID().toString().substring(0, 8);
                     QueuedMessage qm = new QueuedMessage(roomName, username, msg, id);
                     pending.put(id, qm);
                     room.broadcast(msg, username, id);
@@ -527,17 +627,19 @@ public class Server {
 
         void receiveMessage(String roomName, String sender, String msg, String msgId) {
             if (active) {
-                if (sender==null) out.println("SYSTEM:" + roomName + ":" + msg);
-                else            out.println("MESSAGE:" + roomName + ":" + sender + ":" + msg + ":" + msgId);
+                if (sender == null)
+                    out.println("SYSTEM:" + roomName + ":" + msg);
+                else
+                    out.println("MESSAGE:" + roomName + ":" + sender + ":" + msg + ":" + msgId);
             } else {
-                messageBuffer.get(username).add(new QueuedMessage(roomName,sender,msg,msgId));
+                messageBuffer.get(username).add(new QueuedMessage(roomName, sender, msg, msgId));
             }
         }
 
         void replayBufferedMessages() {
             List<QueuedMessage> buf = messageBuffer.get(username);
             for (QueuedMessage qm : new ArrayList<>(buf)) {
-                if (qm.sender==null)
+                if (qm.sender == null)
                     out.println("SYSTEM:" + qm.room + ":" + qm.msg);
                 else
                     out.println("MESSAGE:" + qm.room + ":" + qm.sender + ":" + qm.msg + ":" + qm.msgId);
@@ -554,7 +656,6 @@ public class Server {
             active = false;
             globalLock.writeLock().lock();
             try {
-                // Remove from connectedUsers
                 Set<ClientHandler> set = connectedUsers.get(username);
                 if (set != null) {
                     set.remove(this);
@@ -585,19 +686,22 @@ public class Server {
         private final List<QueuedMessage> history = new ArrayList<>();
 
         Room(String name, boolean aiRoom, String aiPrompt) {
-            this.name = name;
-            this.aiRoom = aiRoom;
-            this.aiPrompt = aiPrompt;
+            this.name    = name;
+            this.aiRoom  = aiRoom;
+            this.aiPrompt= aiPrompt;
         }
+
         String getName() { return name; }
         boolean isAiRoom() { return aiRoom; }
 
         void addUser(ClientHandler ch) {
             users.add(ch);
         }
+
         void removeUser(ClientHandler ch) {
             users.remove(ch);
         }
+
         void sendHistoryTo(ClientHandler u) {
             for (QueuedMessage qm : history) {
                 if (qm.sender == null)
@@ -608,11 +712,11 @@ public class Server {
         }
 
         void broadcast(String msg, String sender) {
-            broadcast(msg, sender, UUID.randomUUID().toString().substring(0,8));
+            broadcast(msg, sender, UUID.randomUUID().toString().substring(0, 8));
         }
 
         void broadcast(String msg, String sender, String msgId) {
-            QueuedMessage qm = new QueuedMessage(name,sender,msg,msgId);
+            QueuedMessage qm = new QueuedMessage(name, sender, msg, msgId);
             history.add(qm);
             if (history.size() > MAX_HISTORY) history.remove(0);
 
@@ -637,7 +741,7 @@ public class Server {
                 conn.setReadTimeout(10000);
 
                 JSONObject body = new JSONObject();
-                body.put("model","llama3.2:1b");
+                body.put("model", "llama3.2:1b");
                 body.put("prompt", aiPrompt + "\nUser: " + lastUserMsg + "\nBot:");
                 body.put("stream", false);
 

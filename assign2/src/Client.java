@@ -11,24 +11,24 @@ import javax.net.ssl.*;
 
 public class Client {
     private static final String SERVER_ADDRESS = "localhost";
-    private static final int SERVER_PORT = 8888;
+    private static final int    SERVER_PORT    = 8888;
 
-    private static final String TRUSTSTORE_PATH = "chatserver.jks";
+    private static final String TRUSTSTORE_PATH     = "chatserver.jks";
     private static final String TRUSTSTORE_PASSWORD = "password";
-    private static final String TOKENS_FILE = "tokens.properties";
+    private static final String TOKENS_FILE         = "tokens.properties";
 
-    private SSLSocket socket;
-    private BufferedReader in;
-    private PrintWriter out;
-    private BufferedReader console;
-    private String username;
-    private String currentRoom;
-    private volatile boolean running = true;
+    private SSLSocket           socket;
+    private BufferedReader      in;
+    private PrintWriter         out;
+    private BufferedReader      console;
+    private String              username;
+    private String              currentRoom;
+    private volatile boolean    running = true;
 
-    private final Set<String> joinedRooms = new HashSet<>();
-    private final Set<String> availableRooms = new HashSet<>();
-    private final Set<String> aiRooms = new HashSet<>();
-    private final ReadWriteLock roomsLock = new ReentrantReadWriteLock();
+    private final Set<String>   joinedRooms    = new HashSet<>();
+    private final Set<String>   availableRooms = new HashSet<>();
+    private final Set<String>   aiRooms        = new HashSet<>();
+    private final ReadWriteLock roomsLock      = new ReentrantReadWriteLock();
 
     // ANSI color codes
     private static final String RESET  = "\u001B[0m";
@@ -50,7 +50,7 @@ public class Client {
         try {
             console = new BufferedReader(new InputStreamReader(System.in));
             connectSecure();
-            authenticate();            // initial or reconnect auth
+            authenticate();             // initial or reconnect auth
             Thread.startVirtualThread(this::receiveMessages);
             handleInput();
         } catch (Exception e) {
@@ -67,6 +67,7 @@ public class Client {
             try (FileInputStream fis = new FileInputStream(TRUSTSTORE_PATH)) {
                 ts.load(fis, TRUSTSTORE_PASSWORD.toCharArray());
             }
+
             TrustManagerFactory tmf = TrustManagerFactory.getInstance(
                     TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(ts);
@@ -74,9 +75,15 @@ public class Client {
 
             SSLSocketFactory factory = sslContext.getSocketFactory();
             socket = (SSLSocket) factory.createSocket(SERVER_ADDRESS, SERVER_PORT);
+
+            // Enforce hostname verification
+            SSLParameters sslParams = socket.getSSLParameters();
+            sslParams.setEndpointIdentificationAlgorithm("HTTPS");
+            socket.setSSLParameters(sslParams);
+
             socket.startHandshake();
 
-            in = new BufferedReader(
+            in  = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
             out = new PrintWriter(
                     new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
@@ -207,8 +214,10 @@ public class Client {
                         String body = msg.substring("MESSAGE:".length());
                         String[] parts = body.split(":", 4);
                         if (parts.length == 4) {
-                            String room = parts[0], sender = parts[1],
-                                    text = parts[2], msgId = parts[3];
+                            String room   = parts[0],
+                                    sender = parts[1],
+                                    text   = parts[2],
+                                    msgId  = parts[3];
                             printMessage(room, sender, text);
                             out.println("ACK:" + msgId);
                         }
@@ -249,8 +258,8 @@ public class Client {
     private void handleJoinEvent(String room, boolean rejoined) {
         addJoinedRoom(room);
         currentRoom = room;
-        String label = (rejoined ? "Rejoined: " : "Joined: ");
-        String color = (rejoined ? CYAN : GREEN);
+        String label = rejoined ? "Rejoined: " : "Joined: ";
+        String color = rejoined ? CYAN : GREEN;
         System.out.println(color + printBold(label) + room + RESET);
         if (aiRooms.contains(room)) {
             System.out.println(BLUE + printBold("[INFO] AI room: bot will respond here") + RESET);
@@ -285,7 +294,7 @@ public class Client {
                         String[] aiParts = arg.split(":", 3);
                         if (aiParts.length >= 2) {
                             String roomName = aiParts[1];
-                            String prompt = aiParts.length == 3 ? aiParts[2] : "";
+                            String prompt  = aiParts.length == 3 ? aiParts[2] : "";
                             out.println("JOIN:AI:" + roomName + (prompt.isEmpty() ? "" : ":" + prompt));
                             System.out.println(BLUE + printBold("Creating/Joining AI room: ") + roomName + RESET);
                             if (!prompt.isEmpty())
@@ -340,7 +349,7 @@ public class Client {
             int idx = content.lastIndexOf(':');
             content = content.substring(0, idx);
         }
-        String prefix = sender.equals("Bot") ? "🤖 " : "";
+        String prefix      = sender.equals("Bot") ? "🤖 " : "";
         String senderColor = sender.equals("Bot") ? BLUE
                 : sender.equals(username) ? GREEN : RESET;
         String header = room.equals(currentRoom)
@@ -358,7 +367,7 @@ public class Client {
             if (list != null && !list.isBlank()) {
                 for (String token : list.split(",")) {
                     if (token.isBlank()) continue;
-                    boolean isAI = token.endsWith(":AI");
+                    boolean isAI   = token.endsWith(":AI");
                     String roomName = isAI
                             ? token.substring(0, token.length() - 3)
                             : token;
@@ -366,8 +375,8 @@ public class Client {
                     if (isAI) aiRooms.add(roomName);
                 }
             }
-            System.out.println(CYAN + printBold("Available rooms: ") +
-                    formatRoomList() + RESET);
+            System.out.println(CYAN + printBold("Available rooms: ")
+                    + formatRoomList() + RESET);
         } finally {
             roomsLock.writeLock().unlock();
         }
