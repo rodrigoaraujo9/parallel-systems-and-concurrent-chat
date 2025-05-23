@@ -32,6 +32,11 @@ public class Client {
 
     private static final String RESET = "\u001B[0m";
     private static final String BOLD = "\u001B[1m";
+    private static final String GREEN = "\u001B[32m";
+    private static final String YELLOW = "\u001B[33m";
+    private static final String RED = "\u001B[31m";
+    private static final String BLUE = "\u001B[34m";
+    private static final String CYAN = "\u001B[36m";
 
     public static void main(String[] args) {
         new Client().start();
@@ -90,10 +95,10 @@ public class Client {
                 Thread.sleep(5000);
                 connectSecure();
                 authenticate();
-                System.err.println("✅ Reconnected successfully.");
+                System.err.println(GREEN + "✅ Reconnected successfully." + RESET);
                 return;
             } catch (Exception e) {
-                System.err.println("Reconnect failed: " + e.getMessage());
+                System.err.println(RED + "Reconnect failed: " + e.getMessage() + RESET);
             }
         }
     }
@@ -105,19 +110,25 @@ public class Client {
             String response = in.readLine();
             if (response != null && response.startsWith("SESSION_RESUMED:")) {
                 username = response.substring("SESSION_RESUMED:".length());
-                System.out.println("✅ Session resumed for " + username + "!");
+                System.out.println(GREEN + "✅ Session resumed for " + username + "!" + RESET);
                 showHelp();
                 return;
             } else {
-                System.out.println("⚠️ Could not resume session: " + response);
+                System.out.println(YELLOW + "⚠️ Could not resume session: " + response + RESET);
+                // Clear the invalid token
+                clearToken();
             }
         }
 
         while (true) {
-            System.out.print("\nEnter your username: ");
+            System.out.print("\nEnter your username (3+ chars, alphanumeric/underscore/dash only): ");
             String user = console.readLine();
+            if (user == null) throw new IOException("Input stream closed");
+
             System.out.print("Enter your password: ");
             String pass = console.readLine();
+            if (pass == null) throw new IOException("Input stream closed");
+
             out.println("LOGIN:" + user + ":" + pass);
 
             String response = in.readLine();
@@ -126,18 +137,18 @@ public class Client {
             if (response.startsWith("AUTH_NEW:")) {
                 username = user;
                 saveToken(response.substring("AUTH_NEW:".length()));
-                System.out.println("🎉 Welcome, new user " + username + "!");
+                System.out.println(GREEN + "🎉 Welcome, new user " + username + "!" + RESET);
                 showHelp();
                 break;
             } else if (response.startsWith("AUTH_OK:")) {
                 username = user;
                 saveToken(response.substring("AUTH_OK:".length()));
-                System.out.println("✅ Logged in successfully as " + username + "!");
+                System.out.println(GREEN + "✅ Logged in successfully as " + username + "!" + RESET);
                 showHelp();
                 break;
             } else if (response.startsWith("AUTH_FAIL:")) {
-                System.out.println("⚠️ Login failed: "
-                        + response.substring("AUTH_FAIL:".length()));
+                System.out.println(RED + "⚠️ Login failed: "
+                        + response.substring("AUTH_FAIL:".length()) + RESET);
             } else {
                 System.out.println("Unexpected response: " + response);
             }
@@ -156,13 +167,18 @@ public class Client {
                             String room = parts[0], sender = parts[1],
                                     text = parts[2], msgId = parts[3];
                             printMessage(room, sender, text);
-                            out.println("ACK:" + msgId);  // <-- send ACK back
+                            out.println("ACK:" + msgId);  // send ACK back
                         }
                     } else if (msg.startsWith("SYSTEM:")) {
                         String[] p = msg.substring("SYSTEM:".length()).split(":", 2);
-                        printSystemMessage(p[0], p[1]);
+                        if (p.length == 2) {
+                            printSystemMessage(p[0], p[1]);
+                        }
                     } else if (msg.startsWith("ROOMS:")) {
                         updateAvailableRooms(msg.substring("ROOMS:".length()));
+                    } else if (msg.startsWith("CREATED:")) {
+                        String room = msg.substring("CREATED:".length());
+                        System.out.println(GREEN + printBold("Created room: ") + room + RESET);
                     } else if (msg.startsWith("JOINED:")) {
                         handleJoinEvent(msg.substring("JOINED:".length()), false);
                     } else if (msg.startsWith("REJOINED:")) {
@@ -170,7 +186,11 @@ public class Client {
                     } else if (msg.startsWith("LEFT:")) {
                         String room = msg.substring("LEFT:".length());
                         removeJoinedRoom(room);
-                        System.out.println(printBold("Left: ") + room);
+                        System.out.println(YELLOW + printBold("Left: ") + room + RESET);
+                    } else if (msg.equals("BYE")) {
+                        System.out.println(GREEN + "👋 Goodbye!" + RESET);
+                        running = false;
+                        break;
                     } else {
                         System.out.println(msg);
                     }
@@ -179,7 +199,7 @@ public class Client {
                 throw new IOException("Connection stream closed");
             } catch (IOException e) {
                 if (running) {
-                    System.err.println("⚠️ Connection lost. Attempting to reconnect...");
+                    System.err.println(RED + "⚠️ Connection lost. Attempting to reconnect..." + RESET);
                     reconnect();
                 }
             }
@@ -190,21 +210,25 @@ public class Client {
         addJoinedRoom(room);
         currentRoom = room;
         String label = rejoined ? "Rejoined: " : "Joined: ";
-        System.out.println(printBold(label) + room);
+        String color = rejoined ? CYAN : GREEN;
+        System.out.println(color + printBold(label) + room + RESET);
         if (aiRooms.contains(room)) {
-            System.out.println(printBold("[INFO] AI room: bot will respond here"));
+            System.out.println(BLUE + printBold("[INFO] AI room: bot will respond here") + RESET);
         }
     }
 
     private void handleInput() throws IOException {
         String line;
         while (running && (line = console.readLine()) != null) {
+            line = line.trim();
+            if (line.isEmpty()) continue;
+
             if (line.startsWith("/")) {
                 handleCommand(line);
             } else if (currentRoom != null) {
                 out.println("MESSAGE:" + currentRoom + ":" + line);
             } else {
-                System.out.println("You must join a room first (/join <room>)");
+                System.out.println(YELLOW + "You must join a room first (/join <room>)" + RESET);
             }
         }
     }
@@ -217,36 +241,100 @@ public class Client {
         switch (cmd) {
             case "join":
                 if (!arg.isBlank()) {
-                    out.println("JOIN:" + arg);
-                    System.out.println(printBold("Joining: ") + arg);
+                    if (arg.toLowerCase().startsWith("ai:")) {
+                        // Handle AI room creation: /join AI:roomname:prompt
+                        String[] aiParts = arg.split(":", 3);
+                        if (aiParts.length >= 2) {
+                            String roomName = aiParts[1];
+                            String prompt = aiParts.length == 3 ? aiParts[2] : "";
+                            out.println("JOIN:AI:" + roomName + (prompt.isEmpty() ? "" : ":" + prompt));
+                            System.out.println(BLUE + printBold("Creating/Joining AI room: ") + roomName + RESET);
+                            if (!prompt.isEmpty()) {
+                                System.out.println(BLUE + "AI Prompt: " + prompt + RESET);
+                            }
+                        } else {
+                            System.out.println(RED + "Usage: /join AI:<name> or /join AI:<name>:<prompt>" + RESET);
+                        }
+                    } else {
+                        out.println("JOIN:" + arg);
+                        System.out.println(GREEN + printBold("Joining: ") + arg + RESET);
+                    }
                 } else {
-                    System.out.println("Usage: /join <room> or /join AI:<name>:<prompt>");
+                    System.out.println(YELLOW + "Usage: /join <room> or /join AI:<name>:<prompt>" + RESET);
                 }
                 break;
             case "leave":
                 if (currentRoom != null) {
                     out.println("LEAVE:" + currentRoom);
-                    System.out.println(printBold("Leaving: ") + currentRoom);
+                    System.out.println(YELLOW + printBold("Leaving: ") + currentRoom + RESET);
+                } else {
+                    System.out.println(YELLOW + "You are not in any room." + RESET);
                 }
                 break;
-            case "rooms": showRooms(); break;
+            case "switch":
+                if (!arg.isBlank()) {
+                    roomsLock.readLock().lock();
+                    try {
+                        if (joinedRooms.contains(arg)) {
+                            currentRoom = arg;
+                            System.out.println(GREEN + printBold("Switched to: ") + arg + RESET);
+                        } else {
+                            System.out.println(RED + "You are not in room: " + arg + RESET);
+                        }
+                    } finally {
+                        roomsLock.readLock().unlock();
+                    }
+                } else {
+                    System.out.println(YELLOW + "Usage: /switch <room>" + RESET);
+                }
+                break;
+            case "rooms":
+                showRooms();
+                break;
             case "logout":
                 running = false;
                 out.println("LOGOUT");
+                clearToken();
                 break;
-            case "help": showHelp(); break;
+            case "help":
+                showHelp();
+                break;
+            case "clear":
+                // Clear screen (works on most terminals)
+                System.out.print("\033[2J\033[H");
+                break;
+            case "status":
+                showStatus();
+                break;
             default:
-                System.out.println("Unknown command. Type /help");
+                System.out.println(RED + "Unknown command. Type /help" + RESET);
         }
     }
 
     private void printMessage(String room, String sender, String content) {
+        // Remove the ACK ID which appears as ":<hexID>" at the very end of the content
+        // ACK IDs are typically 8 hex characters, so be more specific
+        if (content.matches(".*:[0-9A-Fa-f]{8}$")) {
+            int lastColonIndex = content.lastIndexOf(':');
+            content = content.substring(0, lastColonIndex);
+        }
+
         String prefix = sender.equals("Bot") ? "🤖 " : "";
+        String senderColor = sender.equals("Bot") ? BLUE
+                : sender.equals(username) ? GREEN : RESET;
+
         String header = room.equals(currentRoom)
-                ? prefix + sender + ": "
-                : "[" + room + "]" + prefix + sender + ": ";
-        System.out.println(printBold(header) + content);
+                ? senderColor + prefix + sender + ": " + RESET
+                : CYAN + "[" + room + "] " + RESET
+                + senderColor + prefix + sender + ": " + RESET;
+
+        System.out.println(header + content);
     }
+
+
+
+
+
 
     private void updateAvailableRooms(String list) {
         roomsLock.writeLock().lock();
@@ -264,19 +352,44 @@ public class Client {
                     if (isAI) aiRooms.add(roomName);
                 }
             }
-            System.out.println(printBold("Rooms: ") + availableRooms);
+            System.out.println(CYAN + printBold("Available rooms: ") + formatRoomList() + RESET);
         } finally {
             roomsLock.writeLock().unlock();
         }
     }
 
+    private String formatRoomList() {
+        StringBuilder sb = new StringBuilder();
+        for (String room : availableRooms) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(room);
+            if (aiRooms.contains(room)) {
+                sb.append(" (AI)");
+            }
+        }
+        return sb.toString();
+    }
+
     private void showRooms() {
         roomsLock.readLock().lock();
         try {
-            System.out.println(printBold("Current: ")
-                    + (currentRoom != null ? currentRoom : "(none)"));
-            System.out.println(printBold("Joined: ") + joinedRooms);
-            System.out.println(printBold("Available: ") + availableRooms);
+            System.out.println(GREEN + printBold("Current: ")
+                    + (currentRoom != null ? currentRoom : "(none)") + RESET);
+            System.out.println(BLUE + printBold("Joined: ") + joinedRooms + RESET);
+            System.out.println(CYAN + printBold("Available: ") + formatRoomList() + RESET);
+        } finally {
+            roomsLock.readLock().unlock();
+        }
+    }
+
+    private void showStatus() {
+        roomsLock.readLock().lock();
+        try {
+            System.out.println(printBold("=== Status ==="));
+            System.out.println(GREEN + "Username: " + username + RESET);
+            System.out.println(GREEN + "Current room: " + (currentRoom != null ? currentRoom : "(none)") + RESET);
+            System.out.println(BLUE + "Joined rooms: " + joinedRooms + RESET);
+            System.out.println(CYAN + "Available rooms: " + formatRoomList() + RESET);
         } finally {
             roomsLock.readLock().unlock();
         }
@@ -292,23 +405,38 @@ public class Client {
         roomsLock.writeLock().lock();
         try {
             joinedRooms.remove(room);
-            if (room.equals(currentRoom)) currentRoom = null;
+            if (room.equals(currentRoom)) {
+                // Switch to another joined room if available, or set to null
+                currentRoom = joinedRooms.isEmpty() ? null : joinedRooms.iterator().next();
+                if (currentRoom != null) {
+                    System.out.println(GREEN + printBold("Switched to: ") + currentRoom + RESET);
+                }
+            }
         } finally { roomsLock.writeLock().unlock(); }
     }
 
     private void printSystemMessage(String room, String msg) {
-        String header = "[" + room + "] SYSTEM: ";
-        System.out.println(printBold(header) + msg);
+        String header = YELLOW + "[" + room + "] SYSTEM: " + RESET;
+        System.out.println(header + msg);
     }
 
     private void showHelp() {
-        System.out.println(printBold("--- Commands ---"));
-        System.out.println("/join <room>                - Join or create regular room");
-        System.out.println("/join AI:<name>:<prompt>    - Join or create AI room");
-        System.out.println("/leave                      - Leave current room");
-        System.out.println("/rooms                      - Show rooms");
-        System.out.println("/logout                     - Exit");
-        System.out.println("/help                       - Help\n");
+        System.out.println(printBold("=== Commands ==="));
+        System.out.println(GREEN + "/join <room>" + RESET + "                - Join or create regular room");
+        System.out.println(BLUE + "/join AI:<name>" + RESET + "              - Join or create AI room");
+        System.out.println(BLUE + "/join AI:<name>:<prompt>" + RESET + "     - Join or create AI room with custom prompt");
+        System.out.println(YELLOW + "/leave" + RESET + "                      - Leave current room");
+        System.out.println(CYAN + "/switch <room>" + RESET + "               - Switch to another joined room");
+        System.out.println(CYAN + "/rooms" + RESET + "                      - Show room information");
+        System.out.println(GREEN + "/status" + RESET + "                     - Show current status");
+        System.out.println("/clear                      - Clear screen");
+        System.out.println(RED + "/logout" + RESET + "                     - Exit and clear session");
+        System.out.println("/help                       - Show this help");
+        System.out.println();
+        System.out.println(printBold("Tips:"));
+        System.out.println("• Messages show room name if not your current room");
+        System.out.println("• AI rooms are marked with 🤖 and (AI) indicators");
+        System.out.println("• Your session is automatically saved and restored");
     }
 
     private String printBold(String msg) { return BOLD + msg + RESET; }
@@ -317,7 +445,8 @@ public class Client {
         try {
             Path p = Paths.get(TOKEN_FILE);
             if (Files.exists(p)) {
-                return Files.readString(p).trim();
+                String token = Files.readString(p, StandardCharsets.UTF_8).trim();
+                return token.isEmpty() ? null : token;
             }
         } catch (IOException ignored) {}
         return null;
@@ -327,11 +456,20 @@ public class Client {
         try {
             Files.writeString(Paths.get(TOKEN_FILE), token, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            System.err.println("Could not save token: " + e.getMessage());
+            System.err.println(RED + "Could not save token: " + e.getMessage() + RESET);
+        }
+    }
+
+    private void clearToken() {
+        try {
+            Files.deleteIfExists(Paths.get(TOKEN_FILE));
+        } catch (IOException e) {
+            System.err.println(RED + "Could not clear token: " + e.getMessage() + RESET);
         }
     }
 
     private void cleanup() {
+        running = false;
         try { if (socket != null) socket.close(); }
         catch (IOException ignored) {}
     }
