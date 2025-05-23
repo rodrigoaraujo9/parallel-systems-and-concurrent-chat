@@ -15,7 +15,7 @@ public class Client {
 
     private static final String TRUSTSTORE_PATH = "chatserver.jks";
     private static final String TRUSTSTORE_PASSWORD = "password";
-    private static final String TOKEN_FILE = "token.txt";
+    private static final String TOKENS_FILE = "tokens.properties";
 
     private SSLSocket socket;
     private BufferedReader in;
@@ -30,13 +30,17 @@ public class Client {
     private final Set<String> aiRooms = new HashSet<>();
     private final ReadWriteLock roomsLock = new ReentrantReadWriteLock();
 
-    private static final String RESET = "\u001B[0m";
-    private static final String BOLD = "\u001B[1m";
-    private static final String GREEN = "\u001B[32m";
+    // ANSI color codes
+    private static final String RESET  = "\u001B[0m";
+    private static final String BOLD   = "\u001B[1m";
+    private static final String GREEN  = "\u001B[32m";
     private static final String YELLOW = "\u001B[33m";
-    private static final String RED = "\u001B[31m";
-    private static final String BLUE = "\u001B[34m";
-    private static final String CYAN = "\u001B[36m";
+    private static final String RED    = "\u001B[31m";
+    private static final String BLUE   = "\u001B[34m";
+    private static final String CYAN   = "\u001B[36m";
+
+    // Store multiple tokens
+    private final Properties tokens = new Properties();
 
     public static void main(String[] args) {
         new Client().start();
@@ -45,12 +49,9 @@ public class Client {
     public void start() {
         try {
             console = new BufferedReader(new InputStreamReader(System.in));
-            // establish initial connection
             connectSecure();
-            authenticate();
-            // start receiver thread
+            authenticate();            // initial or reconnect auth
             Thread.startVirtualThread(this::receiveMessages);
-            // handle user input on main thread
             handleInput();
         } catch (Exception e) {
             System.err.println("Client error: " + e.getMessage());
@@ -80,7 +81,6 @@ public class Client {
             out = new PrintWriter(
                     new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
 
-            // Read initial welcome
             String welcome = in.readLine();
             System.out.println(welcome);
         } catch (NoSuchAlgorithmException | KeyStoreException |
@@ -94,7 +94,7 @@ public class Client {
             try {
                 Thread.sleep(5000);
                 connectSecure();
-                authenticate();
+                authenticate();    // auto-resume on reconnect if possible
                 System.err.println(GREEN + "✅ Reconnected successfully." + RESET);
                 return;
             } catch (Exception e) {
@@ -104,22 +104,62 @@ public class Client {
     }
 
     private void authenticate() throws IOException {
-        String token = loadToken();
-        if (token != null) {
-            out.println("TOKEN:" + token);
-            String response = in.readLine();
-            if (response != null && response.startsWith("SESSION_RESUMED:")) {
-                username = response.substring("SESSION_RESUMED:".length());
-                System.out.println(GREEN + "✅ Session resumed for " + username + "!" + RESET);
-                showHelp();
-                return;
-            } else {
-                System.out.println(YELLOW + "⚠️ Could not resume session: " + response + RESET);
-                // Clear the invalid token
-                clearToken();
+        loadTokens();
+
+        // If we have an active username (reconnect scenario), try to resume without prompting
+        if (username != null) {
+            String token = tokens.getProperty(username);
+            if (token != null) {
+                out.println("TOKEN:" + token);
+                String response = in.readLine();
+                if (response != null && response.startsWith("SESSION_RESUMED:")) {
+                    System.out.println(GREEN + "✅ Session resumed for " + username + "!" + RESET);
+                    showHelp();
+                    return;
+                } else {
+                    System.out.println(YELLOW + "⚠️ Could not resume session: " + response + RESET);
+                    tokens.remove(username);
+                    saveTokens();
+                    // fall through to full auth flow
+                }
             }
         }
 
+        // Otherwise (first start or resume failed) let user choose existing account or log in new
+        if (!tokens.isEmpty()) {
+            List<String> usersList = new ArrayList<>(tokens.stringPropertyNames());
+            System.out.println("\nSelect account to resume:");
+            for (int i = 0; i < usersList.size(); i++) {
+                System.out.println("  " + (i + 1) + ") " + usersList.get(i));
+            }
+            System.out.println("  " + (usersList.size() + 1) + ") Log in as new user");
+
+            int choice = -1;
+            while (choice < 1 || choice > usersList.size() + 1) {
+                System.out.print("Enter choice: ");
+                String line = console.readLine();
+                try { choice = Integer.parseInt(line.trim()); }
+                catch (Exception ignored) {}
+            }
+
+            if (choice <= usersList.size()) {
+                username = usersList.get(choice - 1);
+                String token = tokens.getProperty(username);
+                out.println("TOKEN:" + token);
+                String response = in.readLine();
+                if (response != null && response.startsWith("SESSION_RESUMED:")) {
+                    System.out.println(GREEN + "✅ Session resumed for " + username + "!" + RESET);
+                    showHelp();
+                    return;
+                } else {
+                    System.out.println(YELLOW + "⚠️ Could not resume session: " + response + RESET);
+                    tokens.remove(username);
+                    saveTokens();
+                }
+            }
+        }
+
+        // Fresh login flow
         while (true) {
             System.out.print("\nEnter your username (3+ chars, alphanumeric/underscore/dash only): ");
             String user = console.readLine();
@@ -130,19 +170,22 @@ public class Client {
             if (pass == null) throw new IOException("Input stream closed");
 
             out.println("LOGIN:" + user + ":" + pass);
-
             String response = in.readLine();
             if (response == null) throw new IOException("Server disconnected during authentication");
 
             if (response.startsWith("AUTH_NEW:")) {
                 username = user;
-                saveToken(response.substring("AUTH_NEW:".length()));
+                String token = response.substring("AUTH_NEW:".length());
+                tokens.setProperty(username, token);
+                saveTokens();
                 System.out.println(GREEN + "🎉 Welcome, new user " + username + "!" + RESET);
                 showHelp();
                 break;
             } else if (response.startsWith("AUTH_OK:")) {
                 username = user;
-                saveToken(response.substring("AUTH_OK:".length()));
+                String token = response.substring("AUTH_OK:".length());
+                tokens.setProperty(username, token);
+                saveTokens();
                 System.out.println(GREEN + "✅ Logged in successfully as " + username + "!" + RESET);
                 showHelp();
                 break;
@@ -167,13 +210,11 @@ public class Client {
                             String room = parts[0], sender = parts[1],
                                     text = parts[2], msgId = parts[3];
                             printMessage(room, sender, text);
-                            out.println("ACK:" + msgId);  // send ACK back
+                            out.println("ACK:" + msgId);
                         }
                     } else if (msg.startsWith("SYSTEM:")) {
                         String[] p = msg.substring("SYSTEM:".length()).split(":", 2);
-                        if (p.length == 2) {
-                            printSystemMessage(p[0], p[1]);
-                        }
+                        if (p.length == 2) printSystemMessage(p[0], p[1]);
                     } else if (msg.startsWith("ROOMS:")) {
                         updateAvailableRooms(msg.substring("ROOMS:".length()));
                     } else if (msg.startsWith("CREATED:")) {
@@ -195,7 +236,6 @@ public class Client {
                         System.out.println(msg);
                     }
                 }
-                // if we fall out of the inner loop, connection closed
                 throw new IOException("Connection stream closed");
             } catch (IOException e) {
                 if (running) {
@@ -209,8 +249,8 @@ public class Client {
     private void handleJoinEvent(String room, boolean rejoined) {
         addJoinedRoom(room);
         currentRoom = room;
-        String label = rejoined ? "Rejoined: " : "Joined: ";
-        String color = rejoined ? CYAN : GREEN;
+        String label = (rejoined ? "Rejoined: " : "Joined: ");
+        String color = (rejoined ? CYAN : GREEN);
         System.out.println(color + printBold(label) + room + RESET);
         if (aiRooms.contains(room)) {
             System.out.println(BLUE + printBold("[INFO] AI room: bot will respond here") + RESET);
@@ -239,19 +279,17 @@ public class Client {
         String arg = parts.length > 1 ? parts[1].trim() : "";
 
         switch (cmd) {
-            case "join":
+            case "join" -> {
                 if (!arg.isBlank()) {
                     if (arg.toLowerCase().startsWith("ai:")) {
-                        // Handle AI room creation: /join AI:roomname:prompt
                         String[] aiParts = arg.split(":", 3);
                         if (aiParts.length >= 2) {
                             String roomName = aiParts[1];
                             String prompt = aiParts.length == 3 ? aiParts[2] : "";
                             out.println("JOIN:AI:" + roomName + (prompt.isEmpty() ? "" : ":" + prompt));
                             System.out.println(BLUE + printBold("Creating/Joining AI room: ") + roomName + RESET);
-                            if (!prompt.isEmpty()) {
+                            if (!prompt.isEmpty())
                                 System.out.println(BLUE + "AI Prompt: " + prompt + RESET);
-                            }
                         } else {
                             System.out.println(RED + "Usage: /join AI:<name> or /join AI:<name>:<prompt>" + RESET);
                         }
@@ -262,16 +300,16 @@ public class Client {
                 } else {
                     System.out.println(YELLOW + "Usage: /join <room> or /join AI:<name>:<prompt>" + RESET);
                 }
-                break;
-            case "leave":
+            }
+            case "leave" -> {
                 if (currentRoom != null) {
                     out.println("LEAVE:" + currentRoom);
                     System.out.println(YELLOW + printBold("Leaving: ") + currentRoom + RESET);
                 } else {
                     System.out.println(YELLOW + "You are not in any room." + RESET);
                 }
-                break;
-            case "switch":
+            }
+            case "switch" -> {
                 if (!arg.isBlank()) {
                     roomsLock.readLock().lock();
                     try {
@@ -287,54 +325,30 @@ public class Client {
                 } else {
                     System.out.println(YELLOW + "Usage: /switch <room>" + RESET);
                 }
-                break;
-            case "rooms":
-                showRooms();
-                break;
-            case "logout":
-                running = false;
-                out.println("LOGOUT");
-                clearToken();
-                break;
-            case "help":
-                showHelp();
-                break;
-            case "clear":
-                // Clear screen (works on most terminals)
-                System.out.print("\033[2J\033[H");
-                break;
-            case "status":
-                showStatus();
-                break;
-            default:
-                System.out.println(RED + "Unknown command. Type /help" + RESET);
+            }
+            case "rooms"   -> showRooms();
+            case "logout"  -> { running = false; out.println("LOGOUT"); removeToken(username); }
+            case "help"    -> showHelp();
+            case "clear"   -> System.out.print("\033[2J\033[H");
+            case "status"  -> showStatus();
+            default        -> System.out.println(RED + "Unknown command. Type /help" + RESET);
         }
     }
 
     private void printMessage(String room, String sender, String content) {
-        // Remove the ACK ID which appears as ":<hexID>" at the very end of the content
-        // ACK IDs are typically 8 hex characters, so be more specific
         if (content.matches(".*:[0-9A-Fa-f]{8}$")) {
-            int lastColonIndex = content.lastIndexOf(':');
-            content = content.substring(0, lastColonIndex);
+            int idx = content.lastIndexOf(':');
+            content = content.substring(0, idx);
         }
-
         String prefix = sender.equals("Bot") ? "🤖 " : "";
         String senderColor = sender.equals("Bot") ? BLUE
                 : sender.equals(username) ? GREEN : RESET;
-
         String header = room.equals(currentRoom)
                 ? senderColor + prefix + sender + ": " + RESET
                 : CYAN + "[" + room + "] " + RESET
                 + senderColor + prefix + sender + ": " + RESET;
-
         System.out.println(header + content);
     }
-
-
-
-
-
 
     private void updateAvailableRooms(String list) {
         roomsLock.writeLock().lock();
@@ -352,7 +366,8 @@ public class Client {
                     if (isAI) aiRooms.add(roomName);
                 }
             }
-            System.out.println(CYAN + printBold("Available rooms: ") + formatRoomList() + RESET);
+            System.out.println(CYAN + printBold("Available rooms: ") +
+                    formatRoomList() + RESET);
         } finally {
             roomsLock.writeLock().unlock();
         }
@@ -363,9 +378,7 @@ public class Client {
         for (String room : availableRooms) {
             if (sb.length() > 0) sb.append(", ");
             sb.append(room);
-            if (aiRooms.contains(room)) {
-                sb.append(" (AI)");
-            }
+            if (aiRooms.contains(room)) sb.append(" (AI)");
         }
         return sb.toString();
     }
@@ -375,8 +388,9 @@ public class Client {
         try {
             System.out.println(GREEN + printBold("Current: ")
                     + (currentRoom != null ? currentRoom : "(none)") + RESET);
-            System.out.println(BLUE + printBold("Joined: ") + joinedRooms + RESET);
-            System.out.println(CYAN + printBold("Available: ") + formatRoomList() + RESET);
+            System.out.println(BLUE  + printBold("Joined: ") + joinedRooms + RESET);
+            System.out.println(CYAN  + printBold("Available: ")
+                    + formatRoomList() + RESET);
         } finally {
             roomsLock.readLock().unlock();
         }
@@ -387,32 +401,14 @@ public class Client {
         try {
             System.out.println(printBold("=== Status ==="));
             System.out.println(GREEN + "Username: " + username + RESET);
-            System.out.println(GREEN + "Current room: " + (currentRoom != null ? currentRoom : "(none)") + RESET);
+            System.out.println(GREEN + "Current room: "
+                    + (currentRoom != null ? currentRoom : "(none)") + RESET);
             System.out.println(BLUE + "Joined rooms: " + joinedRooms + RESET);
-            System.out.println(CYAN + "Available rooms: " + formatRoomList() + RESET);
+            System.out.println(CYAN + "Available rooms: "
+                    + formatRoomList() + RESET);
         } finally {
             roomsLock.readLock().unlock();
         }
-    }
-
-    private void addJoinedRoom(String room) {
-        roomsLock.writeLock().lock();
-        try { joinedRooms.add(room); }
-        finally { roomsLock.writeLock().unlock(); }
-    }
-
-    private void removeJoinedRoom(String room) {
-        roomsLock.writeLock().lock();
-        try {
-            joinedRooms.remove(room);
-            if (room.equals(currentRoom)) {
-                // Switch to another joined room if available, or set to null
-                currentRoom = joinedRooms.isEmpty() ? null : joinedRooms.iterator().next();
-                if (currentRoom != null) {
-                    System.out.println(GREEN + printBold("Switched to: ") + currentRoom + RESET);
-                }
-            }
-        } finally { roomsLock.writeLock().unlock(); }
     }
 
     private void printSystemMessage(String room, String msg) {
@@ -422,49 +418,80 @@ public class Client {
 
     private void showHelp() {
         System.out.println(printBold("=== Commands ==="));
-        System.out.println(GREEN + "/join <room>" + RESET + "                - Join or create regular room");
-        System.out.println(BLUE + "/join AI:<name>" + RESET + "              - Join or create AI room");
-        System.out.println(BLUE + "/join AI:<name>:<prompt>" + RESET + "     - Join or create AI room with custom prompt");
-        System.out.println(YELLOW + "/leave" + RESET + "                      - Leave current room");
-        System.out.println(CYAN + "/switch <room>" + RESET + "               - Switch to another joined room");
-        System.out.println(CYAN + "/rooms" + RESET + "                      - Show room information");
-        System.out.println(GREEN + "/status" + RESET + "                     - Show current status");
-        System.out.println("/clear                      - Clear screen");
-        System.out.println(RED + "/logout" + RESET + "                     - Exit and clear session");
-        System.out.println("/help                       - Show this help");
-        System.out.println();
-        System.out.println(printBold("Tips:"));
+        System.out.println(GREEN  + "/join <room>"                    + RESET
+                + "                - Join or create regular room");
+        System.out.println(BLUE   + "/join AI:<name>"                + RESET
+                + "              - Join/create AI room");
+        System.out.println(BLUE   + "/join AI:<name>:<prompt>"      + RESET
+                + "     - Join/create AI room with prompt");
+        System.out.println(YELLOW + "/leave"                        + RESET
+                + "                      - Leave current room");
+        System.out.println(CYAN   + "/switch <room>"                + RESET
+                + "               - Switch to another joined room");
+        System.out.println(CYAN   + "/rooms"                        + RESET
+                + "                      - Show room info");
+        System.out.println(GREEN  + "/status"                       + RESET
+                + "                     - Show status");
+        System.out.println("/clear"                                  + "                      - Clear screen");
+        System.out.println(RED    + "/logout"                       + RESET
+                + "                     - Exit and clear this account");
+        System.out.println("/help"                                   + "                       - Show this help");
+        System.out.println("\n" + printBold("Tips:"));
         System.out.println("• Messages show room name if not your current room");
         System.out.println("• AI rooms are marked with 🤖 and (AI) indicators");
-        System.out.println("• Your session is automatically saved and restored");
+        System.out.println("• Each account is saved separately in tokens.properties");
     }
 
     private String printBold(String msg) { return BOLD + msg + RESET; }
 
-    private String loadToken() {
+    // Thread-safe helpers for joinedRooms
+    private void addJoinedRoom(String room) {
+        roomsLock.writeLock().lock();
         try {
-            Path p = Paths.get(TOKEN_FILE);
-            if (Files.exists(p)) {
-                String token = Files.readString(p, StandardCharsets.UTF_8).trim();
-                return token.isEmpty() ? null : token;
-            }
-        } catch (IOException ignored) {}
-        return null;
-    }
-
-    private void saveToken(String token) {
-        try {
-            Files.writeString(Paths.get(TOKEN_FILE), token, StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            System.err.println(RED + "Could not save token: " + e.getMessage() + RESET);
+            joinedRooms.add(room);
+        } finally {
+            roomsLock.writeLock().unlock();
         }
     }
 
-    private void clearToken() {
+    private void removeJoinedRoom(String room) {
+        roomsLock.writeLock().lock();
         try {
-            Files.deleteIfExists(Paths.get(TOKEN_FILE));
+            joinedRooms.remove(room);
+            if (room.equals(currentRoom)) {
+                if (!joinedRooms.isEmpty()) {
+                    currentRoom = joinedRooms.iterator().next();
+                    System.out.println(GREEN + printBold("Switched to: ") + currentRoom + RESET);
+                } else {
+                    currentRoom = null;
+                }
+            }
+        } finally {
+            roomsLock.writeLock().unlock();
+        }
+    }
+
+    private void loadTokens() {
+        Path p = Paths.get(TOKENS_FILE);
+        if (Files.exists(p)) {
+            try (InputStream is = Files.newInputStream(p)) {
+                tokens.load(is);
+            } catch (IOException ignored) {}
+        }
+    }
+
+    private void saveTokens() {
+        try (OutputStream os = Files.newOutputStream(Paths.get(TOKENS_FILE))) {
+            tokens.store(os, "username=token");
         } catch (IOException e) {
-            System.err.println(RED + "Could not clear token: " + e.getMessage() + RESET);
+            System.err.println(RED + "Could not save tokens: " + e.getMessage() + RESET);
+        }
+    }
+
+    private void removeToken(String user) {
+        if (user != null && tokens.containsKey(user)) {
+            tokens.remove(user);
+            saveTokens();
         }
     }
 
