@@ -159,8 +159,15 @@ public class Client {
                 System.err.println(GREEN + "✅ Reconnected successfully after " +
                         attemptCount + " attempts!" + RESET);
 
-                // Reset counter on success
-                attemptCount = 0;
+                // ─── Re-join any rooms we were in before ───────────────────────────────
+                roomsLock.readLock().lock();
+                try {
+                    for (String room : joinedRooms) {
+                        out.println("JOIN:" + room);
+                    }
+                } finally {
+                    roomsLock.readLock().unlock();
+                }
 
                 // Restart the message receiver thread
                 Thread.startVirtualThread(() -> {
@@ -175,6 +182,8 @@ public class Client {
                     }
                 });
 
+                // Reset counter on success and exit loop
+                attemptCount = 0;
                 return;
 
             } catch (InterruptedException e) {
