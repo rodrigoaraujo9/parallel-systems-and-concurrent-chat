@@ -576,9 +576,9 @@ public class Client {
         System.out.println(GREEN + "/join <room>" + RESET
                 + "                - Join or create regular room");
         System.out.println(BLUE + "/join AI:<name>" + RESET
-                + "              - Join/create AI room");
+                + "             - Join/create AI room");
         System.out.println(BLUE + "/join AI:<name>:<prompt>" + RESET
-                + "     - Join/create AI room with prompt");
+                + "    - Join/create AI room with prompt");
         System.out.println(YELLOW + "/leave" + RESET
                 + "                      - Leave current room");
         System.out.println(CYAN + "/rooms" + RESET
