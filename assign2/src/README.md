@@ -13,6 +13,9 @@ This repository contains a secure chat server and client implemented in Java. Th
 ```
 ├── Server.java          # Main server implementation
 ├── Client.java          # Main client implementation
+├── build.sh             # Shell script to build and compile the classes
+├── run_server.sh        # Shell script to run the Server class
+├── run_client.sh        # Shell script to run the Client class
 ├── chatserver.jks       # Java KeyStore for TLS (used by both server and client)
 ├── auth.txt             # Stores user credentials (username:salt:hash)
 ├── sessions.txt         # Stores active session tokens
@@ -49,7 +52,8 @@ This repository contains a secure chat server and client implemented in Java. Th
 Compile both Java files:
 
 ```sh
-javac Server.java Client.java
+# From inside the 'src' directory, run:
+./build.sh
 ```
 
 ## Running the Server
@@ -58,7 +62,8 @@ javac Server.java Client.java
 2. Start the server:
 
    ```sh
-   java Server
+   # From inside the 'src' directory, run:
+   ./run_server.sh
    ```
 3. The server listens on port `8888` and enforces TLSv1.2/1.3 with strong cipher suites.
 
@@ -68,7 +73,8 @@ javac Server.java Client.java
 2. Start the client:
 
    ```sh
-   java Client
+   # From inside the 'src' directory, run:
+   ./run_client.sh
    ```
 3. Follow the prompts to log in or resume a session.
 
