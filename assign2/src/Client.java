@@ -50,11 +50,28 @@ public class Client {
         try {
             console = new BufferedReader(new InputStreamReader(System.in));
             connectSecure();
-            authenticate();             // initial or reconnect auth
-            Thread.startVirtualThread(this::receiveMessages);
+            authenticate();
+
+            // Message‐receiver in a virtual thread, with IOException handled inside
+            Thread.startVirtualThread(() -> {
+                try {
+                    receiveMessages();
+                } catch (IOException e) {
+                    System.err.println(RED + "⚠️ Message receiver thread error: " + e.getMessage() + RESET);
+                    if (running) {
+                        System.err.println(YELLOW + "Will attempt to reconnect..." + RESET);
+                        reconnect();
+                    }
+                }
+            });
+
             handleInput();
         } catch (Exception e) {
-            System.err.println("Client error: " + e.getMessage());
+            System.err.println("Client startup error: " + e.getMessage());
+            if (running) {
+                System.err.println(YELLOW + "Attempting to recover..." + RESET);
+                reconnect();
+            }
         } finally {
             cleanup();
         }
@@ -62,6 +79,13 @@ public class Client {
 
     private void connectSecure() throws IOException {
         try {
+            // Close existing socket if present
+            if (socket != null && !socket.isClosed()) {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {}
+            }
+
             SSLContext sslContext = SSLContext.getInstance("TLS");
             KeyStore ts = KeyStore.getInstance("JKS");
             try (FileInputStream fis = new FileInputStream(TRUSTSTORE_PATH)) {
@@ -76,6 +100,10 @@ public class Client {
             SSLSocketFactory factory = sslContext.getSocketFactory();
             socket = (SSLSocket) factory.createSocket(SERVER_ADDRESS, SERVER_PORT);
 
+            // Set socket timeouts for better connection monitoring
+            socket.setSoTimeout(30000); // 30 second read timeout
+            socket.setKeepAlive(true);
+
             // Enforce hostname verification
             SSLParameters sslParams = socket.getSSLParameters();
             sslParams.setEndpointIdentificationAlgorithm("HTTPS");
@@ -83,13 +111,21 @@ public class Client {
 
             socket.startHandshake();
 
-            in  = new BufferedReader(
+            in = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
             out = new PrintWriter(
                     new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
 
+            // Log the client port for iptables testing
+            System.out.println(CYAN + "Connected - Client port: " + socket.getLocalPort() + RESET);
+
             String welcome = in.readLine();
-            System.out.println(welcome);
+            if (welcome != null) {
+                System.out.println(welcome);
+            } else {
+                throw new IOException("No welcome message received from server");
+            }
+
         } catch (NoSuchAlgorithmException | KeyStoreException |
                  CertificateException | KeyManagementException e) {
             throw new IOException("SSL setup failed: " + e.getMessage(), e);
@@ -97,18 +133,82 @@ public class Client {
     }
 
     private void reconnect() {
+        int attemptCount = 0;
+        long baseDelay = 2000; // 2 seconds
+        long maxDelay  = 30000; // 30 seconds
+
+        System.err.println(YELLOW + "🔄 Starting reconnection process..." + RESET);
+
         while (running) {
             try {
-                Thread.sleep(5000);
+                attemptCount++;
+                long delay = Math.min(baseDelay * (long)Math.pow(1.5, attemptCount - 1), maxDelay);
+
+                System.err.println(YELLOW + "Reconnection attempt #" + attemptCount +
+                        " (waiting " + (delay/1000) + "s)" + RESET);
+
+                Thread.sleep(delay);
+
+                // Tear down any half‐open connection
+                closeCurrentConnection();
+
+                // Try to bring the socket back up
                 connectSecure();
-                authenticate();    // auto-resume on reconnect if possible
-                System.err.println(GREEN + "✅ Reconnected successfully." + RESET);
+                authenticate();
+
+                System.err.println(GREEN + "✅ Reconnected successfully after " +
+                        attemptCount + " attempts!" + RESET);
+
+                // ─── Re-join any rooms we were in before ───────────────────────────────
+                roomsLock.readLock().lock();
+                try {
+                    for (String room : joinedRooms) {
+                        out.println("JOIN:" + room);
+                    }
+                } finally {
+                    roomsLock.readLock().unlock();
+                }
+
+                // Restart the message receiver thread
+                Thread.startVirtualThread(() -> {
+                    try {
+                        receiveMessages();
+                    } catch (IOException e) {
+                        System.err.println(RED + "⚠️ Message receiver thread error: " + e.getMessage() + RESET);
+                        if (running) {
+                            System.err.println(YELLOW + "Will attempt to reconnect..." + RESET);
+                            reconnect();
+                        }
+                    }
+                });
+
+                // Reset counter on success and exit loop
+                attemptCount = 0;
+                return;
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println(RED + "Reconnection interrupted" + RESET);
                 return;
             } catch (Exception e) {
-                System.err.println(RED + "Reconnect failed: " + e.getMessage() + RESET);
+                System.err.println(RED + "Reconnect attempt #" + attemptCount +
+                        " failed: " + e.getMessage() + RESET);
+
+                if (e instanceof ConnectException) {
+                    System.err.println(RED + "  → Connection refused (server may be down or port blocked)" + RESET);
+                } else if (e instanceof SocketTimeoutException) {
+                    System.err.println(RED + "  → Connection timed out" + RESET);
+                } else if (e instanceof UnknownHostException) {
+                    System.err.println(RED + "  → Cannot resolve server address" + RESET);
+                }
+                // Loop again until running == false
             }
         }
+
+        System.err.println(YELLOW + "Reconnection stopped (client shutting down)" + RESET);
     }
+
+
 
     private void authenticate() throws IOException {
         loadTokens();
@@ -205,7 +305,9 @@ public class Client {
         }
     }
 
-    private void receiveMessages() {
+    private void receiveMessages() throws IOException {
+        System.err.println(CYAN + "📡 Message receiver thread started" + RESET);
+
         while (running) {
             try {
                 String msg;
@@ -214,10 +316,10 @@ public class Client {
                         String body = msg.substring("MESSAGE:".length());
                         String[] parts = body.split(":", 4);
                         if (parts.length == 4) {
-                            String room   = parts[0],
+                            String room = parts[0],
                                     sender = parts[1],
-                                    text   = parts[2],
-                                    msgId  = parts[3];
+                                    text = parts[2],
+                                    msgId = parts[3];
                             printMessage(room, sender, text);
                             out.println("ACK:" + msgId);
                         }
@@ -245,16 +347,34 @@ public class Client {
                         System.out.println(msg);
                     }
                 }
-                throw new IOException("Connection stream closed");
+
+                // If we reach here, the connection was closed
+                throw new IOException("Connection stream closed by server");
+
+            } catch (SocketTimeoutException e) {
+                // Timeout occurred, check if connection is still valid
+                if (!isConnectionHealthy()) {
+                    throw new IOException("Connection became unhealthy during timeout");
+                }
+                // Otherwise, continue reading (this is normal for keep-alive)
+                continue;
+
             } catch (IOException e) {
                 if (running) {
-                    System.err.println(RED + "⚠️ Connection lost. Attempting to reconnect..." + RESET);
+                    System.err.println(RED + "⚠️ Connection lost: " + e.getMessage() + RESET);
+                    System.err.println(YELLOW + "Will attempt to reconnect indefinitely..." + RESET);
+
+                    // Attempt reconnection
                     reconnect();
+                    return; // Exit this thread, reconnect() will start a new one if successful
+                } else {
+                    System.err.println(CYAN + "Message receiver stopping (client shutdown)" + RESET);
                 }
             }
         }
-    }
 
+        System.err.println(CYAN + "📡 Message receiver thread stopped" + RESET);
+    }
     private void handleJoinEvent(String room, boolean rejoined) {
         addJoinedRoom(room);
         currentRoom = room;
@@ -272,15 +392,70 @@ public class Client {
             line = line.trim();
             if (line.isEmpty()) continue;
 
+            // Check connection health before sending
+            if (!isConnectionHealthy()) {
+                System.err.println(RED + "⚠️ Connection lost while typing. Reconnecting..." + RESET);
+                reconnect();
+                continue;
+            }
+
             if (line.startsWith("/")) {
                 handleCommand(line);
             } else if (currentRoom != null) {
-                out.println("MESSAGE:" + currentRoom + ":" + line);
+                try {
+                    out.println("MESSAGE:" + currentRoom + ":" + line);
+                    if (out.checkError()) {
+                        throw new IOException("Failed to send message - connection error");
+                    }
+                } catch (Exception e) {
+                    System.err.println(RED + "Failed to send message: " + e.getMessage() + RESET);
+                    System.err.println(YELLOW + "Attempting to reconnect..." + RESET);
+                    reconnect();
+                }
             } else {
                 System.out.println(YELLOW + "You must join a room first (/join <room>)" + RESET);
             }
         }
     }
+
+    // New method to check connection health
+    private boolean isConnectionHealthy() {
+        try {
+            return socket != null &&
+                    !socket.isClosed() &&
+                    socket.isConnected() &&
+                    !socket.isInputShutdown() &&
+                    !socket.isOutputShutdown();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // New method to safely close current connection
+    private void closeCurrentConnection() {
+        try {
+            if (out != null) {
+                out.close();
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            if (in != null) {
+                in.close();
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+        } catch (Exception ignored) {}
+
+        in = null;
+        out = null;
+        socket = null;
+    }
+
 
     private void handleCommand(String input) {
         String[] parts = input.substring(1).split(" ", 2);
@@ -294,7 +469,7 @@ public class Client {
                         String[] aiParts = arg.split(":", 3);
                         if (aiParts.length >= 2) {
                             String roomName = aiParts[1];
-                            String prompt  = aiParts.length == 3 ? aiParts[2] : "";
+                            String prompt = aiParts.length == 3 ? aiParts[2] : "";
                             out.println("JOIN:AI:" + roomName + (prompt.isEmpty() ? "" : ":" + prompt));
                             System.out.println(BLUE + printBold("Creating/Joining AI room: ") + roomName + RESET);
                             if (!prompt.isEmpty())
@@ -318,31 +493,17 @@ public class Client {
                     System.out.println(YELLOW + "You are not in any room." + RESET);
                 }
             }
-            case "switch" -> {
-                if (!arg.isBlank()) {
-                    roomsLock.readLock().lock();
-                    try {
-                        if (joinedRooms.contains(arg)) {
-                            currentRoom = arg;
-                            System.out.println(GREEN + printBold("Switched to: ") + arg + RESET);
-                        } else {
-                            System.out.println(RED + "You are not in room: " + arg + RESET);
-                        }
-                    } finally {
-                        roomsLock.readLock().unlock();
-                    }
-                } else {
-                    System.out.println(YELLOW + "Usage: /switch <room>" + RESET);
-                }
+            case "rooms" -> showRooms();
+            case "logout" -> {
+                running = false;
+                out.println("LOGOUT");
+                removeToken(username);
             }
-            case "rooms"   -> showRooms();
-            case "logout"  -> { running = false; out.println("LOGOUT"); removeToken(username); }
-            case "help"    -> showHelp();
-            case "clear"   -> System.out.print("\033[2J\033[H");
-            case "status"  -> showStatus();
-            default        -> System.out.println(RED + "Unknown command. Type /help" + RESET);
+            case "help" -> showHelp();
+            default -> System.out.println(RED + "Unknown command. Type /help" + RESET);
         }
     }
+
 
     private void printMessage(String room, String sender, String content) {
         if (content.matches(".*:[0-9A-Fa-f]{8}$")) {
@@ -405,21 +566,6 @@ public class Client {
         }
     }
 
-    private void showStatus() {
-        roomsLock.readLock().lock();
-        try {
-            System.out.println(printBold("=== Status ==="));
-            System.out.println(GREEN + "Username: " + username + RESET);
-            System.out.println(GREEN + "Current room: "
-                    + (currentRoom != null ? currentRoom : "(none)") + RESET);
-            System.out.println(BLUE + "Joined rooms: " + joinedRooms + RESET);
-            System.out.println(CYAN + "Available rooms: "
-                    + formatRoomList() + RESET);
-        } finally {
-            roomsLock.readLock().unlock();
-        }
-    }
-
     private void printSystemMessage(String room, String msg) {
         String header = YELLOW + "[" + room + "] SYSTEM: " + RESET;
         System.out.println(header + msg);
@@ -427,28 +573,24 @@ public class Client {
 
     private void showHelp() {
         System.out.println(printBold("=== Commands ==="));
-        System.out.println(GREEN  + "/join <room>"                    + RESET
-                + "                 - Join or create regular room");
-        System.out.println(BLUE   + "/join AI:<name>"                + RESET
+        System.out.println(GREEN + "/join <room>" + RESET
+                + "                - Join or create regular room");
+        System.out.println(BLUE + "/join AI:<name>" + RESET
                 + "              - Join/create AI room");
-        System.out.println(BLUE   + "/join AI:<name>:<prompt>"      + RESET
+        System.out.println(BLUE + "/join AI:<name>:<prompt>" + RESET
                 + "     - Join/create AI room with prompt");
-        System.out.println(YELLOW + "/leave"                        + RESET
-                + "                       - Leave current room");
-        System.out.println(CYAN   + "/switch <room>"                + RESET
-                + "               - Switch to another joined room");
-        System.out.println(CYAN   + "/rooms"                        + RESET
-                + "                       - Show room info");
-        System.out.println(GREEN  + "/status"                       + RESET
-                + "                      - Show status");
-        System.out.println("/clear"                                  + "                       - Clear screen");
-        System.out.println(RED    + "/logout"                       + RESET
-                + "                      - Exit and clear this account");
-        System.out.println("/help"                                   + "                        - Show this help");
+        System.out.println(YELLOW + "/leave" + RESET
+                + "                      - Leave current room");
+        System.out.println(CYAN + "/rooms" + RESET
+                + "                      - Show room info");
+        System.out.println(RED + "/logout" + RESET
+                + "                     - Exit and clear this account");
+        System.out.println("/help" + "                       - Show this help");
         System.out.println("\n" + printBold("Tips:"));
         System.out.println("• Messages show room name if not your current room");
         System.out.println("• AI rooms are marked with 🤖 and (AI) indicators");
         System.out.println("• Each account is saved separately in tokens.properties");
+        System.out.println("• Client will automatically reconnect if connection is lost");
     }
 
     private String printBold(String msg) { return BOLD + msg + RESET; }
@@ -505,8 +647,19 @@ public class Client {
     }
 
     private void cleanup() {
+        System.err.println(CYAN + "🧹 Cleaning up client resources..." + RESET);
         running = false;
-        try { if (socket != null) socket.close(); }
-        catch (IOException ignored) {}
+
+        // Close network resources
+        closeCurrentConnection();
+
+        // Close console
+        try {
+            if (console != null) {
+                console.close();
+            }
+        } catch (IOException ignored) {}
+
+        System.err.println(CYAN + "✅ Client cleanup completed" + RESET);
     }
 }
