@@ -1,67 +1,95 @@
-# ChatApp with AI Rooms 🦄
+# Secure Chat Application
 
-Welcome aboard! This README will have you chatting with AI in no time—super simple, super funky.
+This repository contains a secure chat server and client implemented in Java. The server uses TLS for secure communication and supports persistent authentication tokens, chat rooms (including AI-assisted rooms), and automatic reconnection. The client connects securely, manages sessions, and provides a command-line interface.
 
----
+## Prerequisites
 
-## ⚡ Prerequisites
+* Java SE 17 or higher
+* `keytool` (part of JDK) to generate keystore/truststore
+* Network access (localhost or configured server address)
 
-* **Java 17+** installed
-* **`lib/json-20231013.jar`** in your project’s `lib/` directory
-* **LLaMA model file** (e.g. llama3.2:1b)
-* **llama.cpp** repository cloned and built
-
----
-
-## 1. Compile Your Chat App 🛠️
-
-```bash
-# In your project root (where .java files live):
-javac -cp lib/json-20231013.jar Server.java Client.java
-```
-
-Outcome: `Server.class` and `Client.class` appear.
-
----
-
-## 2. Fire Up the LLaMA AI Server 🦙
-
-If you’ve got **ollama** installed and a model named `llama3.2:1b`, just run:
-
-```bash
-ollama run llama3.2:1b
-```
-
-Server URL: `http://localhost:11434/api/generate`
-
----
-
-## 3. Launch the Chat Server 💻
-
-Open a new terminal:
-
-```bash
-# Terminal #1:
-java -cp .:lib/json-20231013.jar Server
-```
-
-You’ll see:
+## Repository Structure
 
 ```
-Server listening on port 8888
+├── Server.java          # Main server implementation
+├── Client.java          # Main client implementation
+├── chatserver.jks       # Java KeyStore for TLS (used by both server and client)
+├── auth.txt             # Stores user credentials (username:salt:hash)
+├── sessions.txt         # Stores active session tokens
+├── tokens.properties    # Client-side storage for session tokens
+└── README.md            # This file
 ```
 
----
+## Generating Keystore and Truststore
 
-## 4. Spin Up a Chat Client 🖥️
+1. **Generate server keystore** (if not already provided):
 
-Open another terminal:
+   ```sh
+   keytool -genkeypair -alias chatserver -keyalg RSA -keysize 2048 \
+     -storetype JKS -keystore chatserver.jks -validity 3650
+   ```
+2. **Export server certificate**:
 
-```bash
-# Terminal #2:
-java -cp .:lib/json-20231013.jar Client
+   ```sh
+   keytool -exportcert -alias chatserver -keystore chatserver.jks \
+     -file chatserver.crt
+   ```
+3. **Create client truststore** (using the same `chatserver.jks` as truststore):
+
+   ```sh
+   # If you want a separate truststore:
+   keytool -importcert -alias chatserver -file chatserver.crt \
+     -keystore clienttruststore.jks
+   ```
+
+   > **Note:** By default, the client uses `chatserver.jks` as its truststore.
+
+## Building
+
+Compile both Java files:
+
+```sh
+javac Server.java Client.java
 ```
 
-Follow prompts to **Login** or **Register**, then use `/join`, `/create`, etc. to chat.
+## Running the Server
 
----
+1. Ensure `chatserver.jks`, `auth.txt`, and `sessions.txt` are in the working directory.
+2. Start the server:
+
+   ```sh
+   java Server
+   ```
+3. The server listens on port `8888` and enforces TLSv1.2/1.3 with strong cipher suites.
+
+## Running the Client
+
+1. Ensure `chatserver.jks` (as truststore) and `tokens.properties` are in the working directory.
+2. Start the client:
+
+   ```sh
+   java Client
+   ```
+3. Follow the prompts to log in or resume a session.
+
+## Client Commands
+
+* `/join <room>`: Join or create a regular chat room.
+* `/join AI:<name>`: Join or create an AI-assisted room.
+* `/join AI:<name>:<prompt>`: Provide an initial AI prompt.
+* `/leave`: Leave the current room.
+* `/switch <room>`: Switch your active room.
+* `/rooms`: Show available and joined rooms.
+* `/status`: Show client and room status.
+* `/test`: Test connection health.
+* `/reconnect`: Force a reconnection attempt.
+* `/clear`: Clear the console screen.
+* `/logout`: Exit and clear the current account.
+* `/help`: Show this help message.
+
+## Notes
+
+* **Authentication**: Credentials are stored using PBKDF2 with HMAC-SHA256. New users are registered on first login.
+* **Session Tokens**: Tokens expire after 24 hours and are stored in `sessions.txt` (server) and `tokens.properties` (client).
+* **Automatic Reconnection**: The client automatically attempts reconnection with exponential backoff when the connection is lost.
+* **AI Rooms**: Messages in AI-enabled rooms are forwarded to a local AI endpoint (`http://localhost:11434/api/generate`) using a simple JSON POST and appended to the chat history.
