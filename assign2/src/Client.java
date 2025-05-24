@@ -428,23 +428,23 @@ public class Client {
     private void showHelp() {
         System.out.println(printBold("=== Commands ==="));
         System.out.println(GREEN  + "/join <room>"                    + RESET
-                + "                - Join or create regular room");
+                + "                 - Join or create regular room");
         System.out.println(BLUE   + "/join AI:<name>"                + RESET
                 + "              - Join/create AI room");
         System.out.println(BLUE   + "/join AI:<name>:<prompt>"      + RESET
                 + "     - Join/create AI room with prompt");
         System.out.println(YELLOW + "/leave"                        + RESET
-                + "                      - Leave current room");
+                + "                       - Leave current room");
         System.out.println(CYAN   + "/switch <room>"                + RESET
                 + "               - Switch to another joined room");
         System.out.println(CYAN   + "/rooms"                        + RESET
-                + "                      - Show room info");
+                + "                       - Show room info");
         System.out.println(GREEN  + "/status"                       + RESET
-                + "                     - Show status");
-        System.out.println("/clear"                                  + "                      - Clear screen");
+                + "                      - Show status");
+        System.out.println("/clear"                                  + "                       - Clear screen");
         System.out.println(RED    + "/logout"                       + RESET
-                + "                     - Exit and clear this account");
-        System.out.println("/help"                                   + "                       - Show this help");
+                + "                      - Exit and clear this account");
+        System.out.println("/help"                                   + "                        - Show this help");
         System.out.println("\n" + printBold("Tips:"));
         System.out.println("• Messages show room name if not your current room");
         System.out.println("• AI rooms are marked with 🤖 and (AI) indicators");
