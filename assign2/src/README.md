@@ -1,101 +1,180 @@
-# Secure Chat Application
+# Secure Chat Server
 
-This repository contains a secure chat server and client implemented in Java. The server uses TLS for secure communication and supports persistent authentication tokens, chat rooms (including AI-assisted rooms), and automatic reconnection. The client connects securely, manages sessions, and provides a command-line interface.
+A robust, enterprise-grade secure chat server implementation in Java featuring SSL/TLS encryption, AI integration, and advanced security measures.
 
-## Prerequisites
+## Features
 
-* Java SE 17 or higher
-* `keytool` (part of JDK) to generate keystore/truststore
-* Network access (localhost or configured server address)
+### 🔐 Security & Authentication
+- **TLS 1.3/1.2 Encryption** with strong cipher suites
+- **PBKDF2 Password Hashing** (120,000 iterations, SHA-256)
+- **Session Token Management** with automatic expiration
+- **Rate Limiting** and IP-based connection limits
+- **Enhanced Input Validation** and sanitization
+- **Certificate-based SSL** with configurable keystores
 
-## Repository Structure
+### 💬 Chat Functionality
+- **Multi-room Support** with real-time messaging
+- **AI-powered Chat Rooms** with customizable prompts
+- **Message History** with persistence
+- **User Presence** tracking and online status
+- **Room Management** (create, join, leave)
+- **Message Acknowledgments** for delivery confirmation
+
+### 🤖 AI Integration
+- **Ollama Integration** for AI-powered responses
+- **Custom AI Prompts** per room
+- **Configurable AI Models** (default: llama3.2:1b)
+- **Intelligent Bot Responses** in designated AI rooms
+
+### 🛡️ Fault Tolerance
+- **Automatic Reconnection** with exponential backoff
+- **Heartbeat Monitoring** for connection health
+- **Session Recovery** after disconnections
+- **Message Timeout Handling**
+- **Connection Pool Management**
+
+## Protocol Overview
+
+### Authentication Flow
+1. **Initial Connection**: SSL handshake with certificate validation
+2. **Login Methods**:
+   - `LOGIN:username:password` - New user registration or login
+   - `TOKEN:session_token` - Resume existing session
+3. **Session Management**: Automatic token generation and validation
+
+### Message Protocol
+- `MESSAGE:room:content` - Send message to room
+- `JOIN:room_name` - Join or create regular room
+- `JOIN:AI:room_name:prompt` - Create AI room with custom prompt
+- `LEAVE:room_name` - Leave current room
+- `HEARTBEAT` - Connection health check
+- `ACK:message_id` - Acknowledge message delivery
+
+### Server Responses
+- `ROOMS:room1,room2:AI,room3` - Available rooms list
+- `USERS:user1,user2,user3` - Online users
+- `MESSAGE:room:sender:content:msg_id` - Incoming message
+- `SYSTEM:room:message` - System notifications
+- `HISTORY:message1|message2|...` - Room message history
+
+## Requirements
+
+### System Requirements
+- **Java 17+** (Virtual Threads support)
+- **Ollama** (for AI functionality)
+- **OpenSSL** or Java keytool (for SSL certificates)
+
+### Dependencies
+- **org.json** library for AI API communication
+- **Java Cryptography Architecture (JCA)**
+- **Java Secure Socket Extension (JSSE)**
+
+## Installation & Setup
+
+### 1. Generate SSL Certificates
+
+```bash
+# Generate keystore with self-signed certificate
+keytool -genkeypair -alias chatserver -keyalg RSA -keysize 2048 \
+        -validity 365 -keystore chatserver.jks \
+        -dname "CN=localhost,OU=ChatServer,O=YourOrg,C=US" \
+        -storepass password -keypass password
+```
+
+### 2. Set Up Ollama (Optional - for AI features)
+
+```bash
+
+# Run with the chosen model
+ollama run llama3.2:1b
 
 ```
-├── Server.java          # Main server implementation
-├── Client.java          # Main client implementation
-├── build.sh             # Shell script to build and compile the classes
-├── run_server.sh        # Shell script to run the Server class
-├── run_client.sh        # Shell script to run the Client class
-├── chatserver.jks       # Java KeyStore for TLS (used by both server and client)
-├── auth.txt             # Stores user credentials (username:salt:hash)
-├── sessions.txt         # Stores active session tokens
-├── tokens.properties    # Client-side storage for session tokens
-└── README.md            # This file
+
+### 3. Compile the Project
+
+```bash
+# Download org.json library
+wget https://repo1.maven.org/maven2/org/json/json/20231013/json-20231013.jar
+
+# Compile server
+javac -cp ".:json-20231013.jar" Server.java
+
+# Compile client  
+javac Client.java
 ```
 
-## Generating Keystore and Truststore
+## Running the Application
 
-1. **Generate server keystore** (if not already provided):
+### Start the Server
 
-   ```sh
-   keytool -genkeypair -alias chatserver -keyalg RSA -keysize 2048 \
-     -storetype JKS -keystore chatserver.jks -validity 3650
-   ```
-2. **Export server certificate**:
+```bash
+# Basic startup (uses default paths)
+java -cp ".:./lib/json-20231013.jar" Server
 
-   ```sh
-   keytool -exportcert -alias chatserver -keystore chatserver.jks \
-     -file chatserver.crt
-   ```
-3. **Create client truststore** (using the same `chatserver.jks` as truststore):
-
-   ```sh
-   # If you want a separate truststore:
-   keytool -importcert -alias chatserver -file chatserver.crt \
-     -keystore clienttruststore.jks
-   ```
-
-   > **Note:** By default, the client uses `chatserver.jks` as its truststore.
-
-## Building
-
-Compile both Java files:
-
-```sh
-# From inside the 'src' directory, run:
-./build.sh
+# Production startup with custom SSL config
+java -Djavax.net.ssl.keyStore=./chatserver.jks \
+     -Djavax.net.ssl.keyStorePassword=your_secure_password \
+     -cp ".:./lib/json-20231013.jar" Server
 ```
 
-## Running the Server
+### Start the Client
 
-1. Ensure `chatserver.jks`, `auth.txt`, and `sessions.txt` are in the working directory.
-2. Start the server:
+```bash
+# Basic startup
+java Client
 
-   ```sh
-   # From inside the 'src' directory, run:
-   ./run_server.sh
-   ```
-3. The server listens on port `8888` and enforces TLSv1.2/1.3 with strong cipher suites.
+# With custom SSL truststore
+java -Djavax.net.ssl.trustStore=./chatserver.jks \
+     -Djavax.net.ssl.trustStorePassword=password \
+     Client
+```
 
-## Running the Client
+## Configuration
 
-1. Ensure `chatserver.jks` (as truststore) and `tokens.properties` are in the working directory.
-2. Start the client:
+### Server Configuration
+- **Port**: 8888 (configurable in `Server.java`)
+- **Keystore**: `chatserver.jks` (override with system properties)
+- **AI Endpoint**: `http://localhost:11434/api/generate`
+- **Session Timeout**: 24 hours
+- **Max Connections per IP**: 5
+- **Rate Limiting**: 3 failed attempts per 10 minutes
 
-   ```sh
-   # From inside the 'src' directory, run:
-   ./run_client.sh
-   ```
-3. Follow the prompts to log in or resume a session.
+### Security Parameters
+- **PBKDF2 Iterations**: 120,000
+- **Salt Length**: 32 bytes
+- **Key Length**: 256 bits
+- **Token Length**: 48 bytes (Base64 encoded)
 
-## Client Commands
+## Usage Examples
 
-* `/join <room>`: Join or create a regular chat room.
-* `/join AI:<name>`: Join or create an AI-assisted room.
-* `/join AI:<name>:<prompt>`: Provide an initial AI prompt.
-* `/leave`: Leave the current room.
-* `/switch <room>`: Switch your active room.
-* `/rooms`: Show available and joined rooms.
-* `/status`: Show client and room status.
-* `/test`: Test connection health.
-* `/reconnect`: Force a reconnection attempt.
-* `/clear`: Clear the console screen.
-* `/logout`: Exit and clear the current account.
-* `/help`: Show this help message.
+### Basic Chat Commands
+```
+/join General          # Join the General room
+/join AI:Helper        # Create/join AI room named "Helper"
+/join AI:Tutor:You are a patient math tutor  # AI room with custom prompt
+/leave                 # Leave current room
+/rooms                 # Show all available rooms
+/users                 # Show online users
+/list                  # Show users in current room
+/history               # View room message history
+/logout                # Exit and clear session
+/help                  # Show command help
+```
 
-## Notes
+### AI Room Features
+- AI rooms are marked with 🤖 indicator
+- Bot responds automatically to user messages
+- Custom prompts can be set during room creation
+- AI responses are generated using Ollama backend
 
-* **Authentication**: Credentials are stored using PBKDF2 with HMAC-SHA256. New users are registered on first login.
-* **Session Tokens**: Tokens expire after 24 hours and are stored in `sessions.txt` (server) and `tokens.properties` (client).
-* **Automatic Reconnection**: The client automatically attempts reconnection with exponential backoff when the connection is lost.
-* **AI Rooms**: Messages in AI-enabled rooms are forwarded to a local AI endpoint (`http://localhost:11434/api/generate`) using a simple JSON POST and appended to the chat history.
+## File Structure
+
+```
+├── Server.java           # Main server implementation
+├── Client.java           # Client application
+├── chatserver.jks        # SSL keystore (generated)
+├── auth.txt              # User credentials (auto-created)
+├── sessions.txt          # Active sessions (auto-created)
+├── tokens.properties     # Client session tokens (auto-created)
+└── json-20231013.jar     # JSON library dependency
+```
