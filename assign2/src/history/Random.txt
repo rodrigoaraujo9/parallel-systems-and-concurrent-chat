@@ -1,0 +1,6 @@
+1748141766188:rodri:hello:f69c0445
+1748141770236:rodri:bnd:73470bfe
+1748142520601:rodri:hello:7a9c36f1
+1748142547124:rodri:hello:432b085c
+1748142715696:null:rodri disconnected:b6afc950
+1748143330706:null:rodri disconnected:7ed5560a

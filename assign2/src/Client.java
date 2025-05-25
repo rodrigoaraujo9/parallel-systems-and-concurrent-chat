@@ -43,7 +43,7 @@ public class Client {
     // Store multiple tokens with proper encryption
     private final Properties tokens = new Properties();
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
         // Check if security properties are properly set
         validateSecurityProperties();
         new Client().start();
@@ -56,56 +56,69 @@ public class Client {
         if (trustStore == null || trustStorePassword == null) {
             System.err.println(YELLOW + "Warning: SSL properties not set via system properties." + RESET);
             System.err.println("For better security, run with:");
-            System.err.println("java -Djavax.net.ssl.trustStore=chatserver.jks -Djavax.net.ssl.trustStorePassword=yourpassword Client");
+            System.err.println("java -Djavax.net.ssl.trustStore=chatserver.jks -Djavax.net.ssl.trustStorePassword=password Client");
         }
     }
-
-    public void start() {
+    public void start() throws IOException {
         try {
             console = new BufferedReader(new InputStreamReader(System.in));
-            connectSecure();
-            authenticate();
-
-            // Message receiver in a virtual thread, with IOException handled inside
-            Thread.startVirtualThread(() -> {
-                try {
-                    receiveMessages();
-                } catch (IOException e) {
-                    System.err.println(RED + "Connection lost: " + e.getMessage() + RESET);
-                    if (running) {
-                        reconnect();
-                    }
-                }
-            });
-
-            handleInput();
         } catch (Exception e) {
-            System.err.println("Client startup error: " + e.getMessage());
-            if (running) {
-                reconnect();
-            }
-        } finally {
-            cleanup();
+            System.err.println(RED + "Error initializing console: " + e.getMessage() + RESET);
+            return;
         }
+
+        // Retry loop for connection and authentication
+        while (running) {
+            try {
+                connectSecure();
+                authenticate();
+                break;
+            } catch (Exception e) {
+                System.err.println(RED + "Connection/authentication error: " + e.getMessage() + RESET);
+                System.err.println(YELLOW + "Retrying in 5 seconds..." + RESET);
+                try {
+                    Thread.sleep(5000);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+
+        if (!running || socket == null) {
+            cleanup();
+            return;
+        }
+
+        // Message receiver in a virtual thread
+        Thread.startVirtualThread(() -> {
+            try {
+                receiveMessages();
+            } catch (IOException e) {
+                System.err.println(RED + "Connection lost: " + e.getMessage() + RESET);
+                if (running) {
+                    reconnect();
+                }
+            }
+        });
+
+        // Handle user input on main thread
+        handleInput();
+        cleanup();
     }
 
     private void connectSecure() throws IOException {
         try {
             // Close existing socket if present
             if (socket != null && !socket.isClosed()) {
-                try {
-                    socket.close();
-                } catch (IOException ignored) {}
+                try { socket.close(); } catch (IOException ignored) {}
             }
 
-            // Enhanced SSL configuration
-            SSLContext sslContext = SSLContext.getInstance("TLSv1.3"); // Force TLS 1.3
+            SSLContext sslContext = SSLContext.getInstance("TLSv1.3");
             KeyStore ts = KeyStore.getInstance("JKS");
 
-            // Use system property for truststore path
-            String trustStorePath = System.getProperty("javax.net.ssl.trustStore", TRUSTSTORE_PATH);
-            String trustStorePass = System.getProperty("javax.net.ssl.trustStorePassword", TRUSTSTORE_PASSWORD);
-
+            String trustStorePath = TRUSTSTORE_PATH;
+            String trustStorePass = TRUSTSTORE_PASSWORD;
             try (FileInputStream fis = new FileInputStream(trustStorePath)) {
                 ts.load(fis, trustStorePass.toCharArray());
             }
@@ -114,22 +127,16 @@ public class Client {
                     TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(ts);
 
-            // Use secure random
             SecureRandom secureRandom = SecureRandom.getInstanceStrong();
             sslContext.init(null, tmf.getTrustManagers(), secureRandom);
 
             SSLSocketFactory factory = sslContext.getSocketFactory();
             socket = (SSLSocket) factory.createSocket(SERVER_ADDRESS, SERVER_PORT);
 
-            // Enhanced security settings
-            socket.setSoTimeout(30000); // 30 second read timeout
+            socket.setSoTimeout(30000);
             socket.setKeepAlive(true);
-
-            // Force only TLS 1.3 and 1.2
             socket.setEnabledProtocols(new String[]{"TLSv1.3", "TLSv1.2"});
-
-            // Use only strong cipher suites
-            String[] strongCiphers = {
+            socket.setEnabledCipherSuites(new String[]{
                     "TLS_AES_256_GCM_SHA384",
                     "TLS_CHACHA20_POLY1305_SHA256",
                     "TLS_AES_128_GCM_SHA256",
@@ -137,24 +144,18 @@ public class Client {
                     "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
                     "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
                     "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
-            };
-            socket.setEnabledCipherSuites(strongCiphers);
+            });
 
-            // Enforce strict hostname verification
             SSLParameters sslParams = socket.getSSLParameters();
             sslParams.setEndpointIdentificationAlgorithm("HTTPS");
-            sslParams.setNeedClientAuth(false); // Client authentication not required
+            sslParams.setNeedClientAuth(false);
             socket.setSSLParameters(sslParams);
 
             socket.startHandshake();
-
-            // Verify the connection security
             verifyConnectionSecurity();
 
-            in = new BufferedReader(
-                    new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-            out = new PrintWriter(
-                    new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            out = new PrintWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
 
             String welcome = in.readLine();
             if (welcome != null) {
@@ -162,7 +163,6 @@ public class Client {
             } else {
                 throw new IOException("No welcome message received from server");
             }
-
         } catch (NoSuchAlgorithmException | KeyStoreException |
                  CertificateException | KeyManagementException e) {
             throw new IOException("SSL setup failed: " + e.getMessage(), e);

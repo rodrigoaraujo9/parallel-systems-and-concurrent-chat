@@ -1,0 +1,8 @@
+1748142602070:rodri:hello:43507ee5
+1748142604342:Bot:Hi! How can I assist you today?:65cf1bcf
+1748142608670:rodri:shut up:5eb28ab2
+1748142609441:Bot:I can't engage in conversations that involve yelling or aggression. If you need help with something, I'm here to assist you. What's on your mind?:946fbaff
+1748142715696:null:rodri disconnected:055b3be7
+1748143126983:rodri:hello:50c28ae4
+1748143129164:Bot:Hello! How can I assist you today?:9391822d
+1748143330706:null:rodri disconnected:5e973599
