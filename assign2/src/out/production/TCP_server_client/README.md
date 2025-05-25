@@ -95,25 +95,16 @@ ollama run llama3.2:1b
 ### Start the Server
 
 ```bash
-# Basic startup (uses default paths)
-.7run_server.sh
+chmod +x ./run_server.sh
+./run_server.sh
 
-# Production startup with custom SSL config
-java -Djavax.net.ssl.keyStore=./chatserver.jks \
-     -Djavax.net.ssl.keyStorePassword=your_secure_password \
-     -cp ".:./lib/json-20231013.jar" Server
 ```
 
 ### Start the Client
 
 ```bash
-# Basic startup
-java Client
-
-# With custom SSL truststore
-java -Djavax.net.ssl.trustStore=./chatserver.jks \
-     -Djavax.net.ssl.trustStorePassword=password \
-     Client
+chmod +x ./run_client.sh
+./run_client.sh
 ```
 
 ## Configuration
