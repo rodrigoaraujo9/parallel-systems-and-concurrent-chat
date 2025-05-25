@@ -79,34 +79,15 @@ keytool -genkeypair -alias chatserver -keyalg RSA -keysize 2048 \
         -validity 365 -keystore chatserver.jks \
         -dname "CN=localhost,OU=ChatServer,O=YourOrg,C=US" \
         -storepass password -keypass password
-
-# For production, use proper CA-signed certificates
 ```
 
 ### 2. Set Up Ollama (Optional - for AI features)
 
 ```bash
-# Install Ollama
-curl -fsSL https://ollama.ai/install.sh | sh
 
-# Pull the default model
-ollama pull llama3.2:1b
+# Run with the chosen model
+ollama run llama3.2:1b
 
-# Start Ollama service
-ollama serve
-```
-
-### 3. Compile the Project
-
-```bash
-# Download org.json library
-wget https://repo1.maven.org/maven2/org/json/json/20231013/json-20231013.jar
-
-# Compile server
-javac -cp ".:json-20231013.jar" Server.java
-
-# Compile client  
-javac Client.java
 ```
 
 ## Running the Application
@@ -115,12 +96,12 @@ javac Client.java
 
 ```bash
 # Basic startup (uses default paths)
-java -cp ".:json-20231013.jar" Server
+.7run_server.sh
 
 # Production startup with custom SSL config
 java -Djavax.net.ssl.keyStore=./chatserver.jks \
      -Djavax.net.ssl.keyStorePassword=your_secure_password \
-     -cp ".:json-20231013.jar" Server
+     -cp ".:./lib/json-20231013.jar" Server
 ```
 
 ### Start the Client
@@ -184,46 +165,3 @@ java -Djavax.net.ssl.trustStore=./chatserver.jks \
 ├── tokens.properties     # Client session tokens (auto-created)
 └── json-20231013.jar     # JSON library dependency
 ```
-
-## Security Best Practices
-
-### For Production Deployment
-1. **Use proper CA-signed certificates** instead of self-signed
-2. **Store keystore passwords securely** (environment variables, secret management)
-3. **Configure firewall rules** to limit access
-4. **Enable logging and monitoring**
-5. **Regular security updates** and dependency scanning
-6. **Use strong, unique passwords** for all keystores
-
-### Network Security
-- Server binds to all interfaces by default - restrict in production
-- Consider running behind reverse proxy (nginx, Apache)
-- Implement additional rate limiting at network level
-- Use VPN or private networks for sensitive deployments
-
-## Troubleshooting
-
-### Common Issues
-
-**SSL Handshake Failures**
-```bash
-# Verify keystore
-keytool -list -keystore chatserver.jks
-
-# Check certificate validity
-keytool -list -v -keystore chatserver.jks
-```
-
-**AI Features Not Working**
-```bash
-# Check Ollama status
-curl http://localhost:11434/api/tags
-
-# Verify model availability
-ollama list
-```
-
-**Connection Issues**
-- Check firewall settings (port 8888)
-- Verify SSL certificate validity
-- Ensure client and server use compatible cipher suites

@@ -90,43 +90,21 @@ ollama run llama3.2:1b
 
 ```
 
-### 3. Compile the Project
-
-```bash
-# Download org.json library
-wget https://repo1.maven.org/maven2/org/json/json/20231013/json-20231013.jar
-
-# Compile server
-javac -cp ".:json-20231013.jar" Server.java
-
-# Compile client  
-javac Client.java
-```
-
 ## Running the Application
 
 ### Start the Server
 
 ```bash
-# Basic startup (uses default paths)
-java -cp ".:./lib/json-20231013.jar" Server
+chmod +x ./run_server.sh
+./run_server.sh
 
-# Production startup with custom SSL config
-java -Djavax.net.ssl.keyStore=./chatserver.jks \
-     -Djavax.net.ssl.keyStorePassword=your_secure_password \
-     -cp ".:./lib/json-20231013.jar" Server
 ```
 
 ### Start the Client
 
 ```bash
-# Basic startup
-java Client
-
-# With custom SSL truststore
-java -Djavax.net.ssl.trustStore=./chatserver.jks \
-     -Djavax.net.ssl.trustStorePassword=password \
-     Client
+chmod +x ./run_client.sh
+./run_client.sh
 ```
 
 ## Configuration
