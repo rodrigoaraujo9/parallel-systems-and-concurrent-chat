@@ -27,10 +27,13 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+// Removed ConcurrentHashMap import - using manual synchronization instead
+import java.util.stream.Collectors;
 
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -71,6 +74,10 @@ public class Server {
     private static final long   LOGIN_WINDOW_MS = 10 * 60 * 1000; // Increased to 10 min
     private static final int    MAX_CONN_PER_IP = 5; // New: limit connections per IP
 
+    // Enhanced fault tolerance
+    private static final long   MESSAGE_TIMEOUT = 30000; // 30 seconds
+    private static final long   HEARTBEAT_INTERVAL = 60000; // 1 minute
+
     private final ReadWriteLock                   globalLock        = new ReentrantReadWriteLock();
     private       SSLContext                       sslContext;
     // Credentials: username → (saltHex, hashHex)
@@ -82,12 +89,17 @@ public class Server {
     private final Map<String,String>              tokenToUser       = new HashMap<>();
     private final Map<String,Long>                tokenExpires      = new HashMap<>();
     private final Map<String,Set<String>>         userRooms         = new HashMap<>();
-    private final Map<String,List<QueuedMessage>> messageBuffer     = new HashMap<>();
 
     // Enhanced rate-limiting: IP → list of failure timestamps
     private final Map<String,List<Long>> loginFailuresByIp = Collections.synchronizedMap(new HashMap<>());
     // New: Connection limiting per IP
     private final Map<String,Integer> connectionsPerIp = Collections.synchronizedMap(new HashMap<>());
+
+    // Enhanced fault tolerance tracking - using manual synchronization
+    private final Map<String, Long> messageTimestamps = new HashMap<>();
+    private final Map<String, Long> clientHeartbeats = new HashMap<>();
+    private final ReadWriteLock messageTimestampsLock = new ReentrantReadWriteLock();
+    private final ReadWriteLock clientHeartbeatsLock = new ReentrantReadWriteLock();
 
     public static void main(String[] args) {
         // Check if security properties are properly set
@@ -218,7 +230,6 @@ public class Server {
                                     ? new HashSet<>(Arrays.asList(parts[3].split(",")))
                                     : new HashSet<>();
                             userRooms.put(user, rms);
-                            messageBuffer.put(user, new ArrayList<>());
                         } catch (NumberFormatException e) {
                             System.err.println("Invalid session data for user: " + user);
                         }
@@ -308,6 +319,8 @@ public class Server {
 
             Thread.startVirtualThread(this::sessionCleanupTask);
             Thread.startVirtualThread(this::connectionCleanupTask);
+            Thread.startVirtualThread(this::heartbeatMonitorTask);
+            Thread.startVirtualThread(this::messageTimeoutTask);
 
             while (true) {
                 try {
@@ -353,6 +366,74 @@ public class Server {
             try {
                 Thread.sleep(300_000); // 5 min
                 cleanupOldFailures();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    private void heartbeatMonitorTask() {
+        while (true) {
+            try {
+                Thread.sleep(HEARTBEAT_INTERVAL);
+                long now = System.currentTimeMillis();
+
+                // Check for stale connections with proper synchronization
+                clientHeartbeatsLock.writeLock().lock();
+                try {
+                    Iterator<Map.Entry<String, Long>> it = clientHeartbeats.entrySet().iterator();
+                    while (it.hasNext()) {
+                        Map.Entry<String, Long> entry = it.next();
+                        if (now - entry.getValue() > HEARTBEAT_INTERVAL * 2) {
+                            String user = entry.getKey();
+                            System.out.println("Client " + user + " appears disconnected (no heartbeat)");
+                            it.remove();
+
+                            // Cleanup user connections
+                            globalLock.writeLock().lock();
+                            try {
+                                Set<ClientHandler> handlers = connectedUsers.get(user);
+                                if (handlers != null) {
+                                    for (ClientHandler handler : new ArrayList<>(handlers)) {
+                                        handler.cleanup(false); // Don't remove from rooms for reconnection
+                                    }
+                                }
+                            } finally {
+                                globalLock.writeLock().unlock();
+                            }
+                        }
+                    }
+                } finally {
+                    clientHeartbeatsLock.writeLock().unlock();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    private void messageTimeoutTask() {
+        while (true) {
+            try {
+                Thread.sleep(10000); // Check every 10 seconds
+                long now = System.currentTimeMillis();
+
+                messageTimestampsLock.writeLock().lock();
+                try {
+                    Iterator<Map.Entry<String, Long>> it = messageTimestamps.entrySet().iterator();
+                    while (it.hasNext()) {
+                        Map.Entry<String, Long> entry = it.next();
+                        if (now - entry.getValue() > MESSAGE_TIMEOUT) {
+                            String msgId = entry.getKey();
+                            System.out.println("Message " + msgId + " timed out without acknowledgment");
+                            it.remove();
+                        }
+                    }
+                } finally {
+                    messageTimestampsLock.writeLock().unlock();
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -435,7 +516,7 @@ public class Server {
                     }
 
                     if (!isValidPassword(p)) {
-                        out.println("AUTH_FAIL:Password does not meet security requirements");
+                        out.println("AUTH_FAIL:Password must be 8+ characters with uppercase, lowercase, and digit");
                         recordFailure(clientIp, now);
                         continue;
                     }
@@ -458,8 +539,8 @@ public class Server {
                             String tok = createUserToken(u);
                             out.println("AUTH_NEW:" + tok);
                             userRooms.put(u, new HashSet<>());
-                            messageBuffer.put(u, new ArrayList<>());
                             sendRoomList(out);
+                            sendUserList(out);
                             System.out.println("New user registered: " + u);
                             break;
                         } else {
@@ -476,8 +557,8 @@ public class Server {
                                 user = u;
                                 String tok = createUserToken(u);
                                 out.println("AUTH_OK:" + tok);
-                                messageBuffer.putIfAbsent(u, new ArrayList<>());
                                 sendRoomList(out);
+                                sendUserList(out);
                                 System.out.println("User logged in: " + u);
                                 break;
                             }
@@ -496,21 +577,29 @@ public class Server {
 
                         globalLock.writeLock().lock();
                         try {
-                            messageBuffer.putIfAbsent(u, new ArrayList<>());
                             sendRoomList(out);
+                            sendUserList(out);
                             handler = new ClientHandler(u, sock, in, out, clientIp);
                             connectedUsers.computeIfAbsent(u, k -> new HashSet<>()).add(handler);
 
-                            // Rejoin saved rooms
+                            // Rejoin saved rooms without history replay
                             for (String rn : userRooms.getOrDefault(u, Set.of())) {
                                 Room r = rooms.get(rn);
                                 if (r != null) {
                                     handler.silentlyJoinRoom(r);
                                     out.println("REJOINED:" + rn);
-                                    r.sendHistoryTo(handler);
+                                    // NO HISTORY REPLAY - just send welcome message
+                                    out.println("SYSTEM:" + rn + ":Welcome back to " + rn);
                                 }
                             }
-                            handler.replayBufferedMessages();
+
+                            // Update heartbeat with proper synchronization
+                            clientHeartbeatsLock.writeLock().lock();
+                            try {
+                                clientHeartbeats.put(u, System.currentTimeMillis());
+                            } finally {
+                                clientHeartbeatsLock.writeLock().unlock();
+                            }
                         } finally {
                             globalLock.writeLock().unlock();
                         }
@@ -535,6 +624,12 @@ public class Server {
                 try {
                     handler = new ClientHandler(user, sock, in, out, clientIp);
                     connectedUsers.computeIfAbsent(user, k -> new HashSet<>()).add(handler);
+                    clientHeartbeatsLock.writeLock().lock();
+                    try {
+                        clientHeartbeats.put(user, System.currentTimeMillis());
+                    } finally {
+                        clientHeartbeatsLock.writeLock().unlock();
+                    }
                 } finally {
                     globalLock.writeLock().unlock();
                 }
@@ -547,8 +642,19 @@ public class Server {
                     out.println("BYE");
                     System.out.println("User logged out: " + user);
                     break;
+                } else if (line.startsWith("HEARTBEAT")) {
+                    clientHeartbeatsLock.writeLock().lock();
+                    try {
+                        clientHeartbeats.put(user, System.currentTimeMillis());
+                    } finally {
+                        clientHeartbeatsLock.writeLock().unlock();
+                    }
+                    if (line.equals("HEARTBEAT")) {
+                        out.println("HEARTBEAT_ACK");
+                    }
+                } else {
+                    dispatch(line, handler);
                 }
-                dispatch(line, handler);
             }
             handler.cleanup(true);
 
@@ -579,6 +685,21 @@ public class Server {
         out.println(sb);
     }
 
+    private void sendUserList(PrintWriter out) {
+        globalLock.readLock().lock();
+        try {
+            Set<String> onlineUsers = new HashSet<>();
+            for (String user : connectedUsers.keySet()) {
+                if (!connectedUsers.get(user).isEmpty()) {
+                    onlineUsers.add(user);
+                }
+            }
+            out.println("USERS:" + String.join(",", onlineUsers));
+        } finally {
+            globalLock.readLock().unlock();
+        }
+    }
+
     private void dispatch(String line, ClientHandler h) {
         try {
             if (line.startsWith("JOIN:")) {
@@ -595,6 +716,11 @@ public class Server {
                     String rn = sanitizeInput(arg, MAX_NAME_LEN);
                     if (isValidRoomName(rn)) h.createOrJoin(rn, false, null);
                 }
+            } else if (line.startsWith("REJOIN:")) {
+                String rn = sanitizeInput(line.substring(7), MAX_NAME_LEN);
+                if (isValidRoomName(rn)) {
+                    h.rejoinRoom(rn);
+                }
             } else if (line.startsWith("LEAVE:")) {
                 h.leaveRoom(line.substring(6));
             } else if (line.startsWith("MESSAGE:")) {
@@ -605,6 +731,12 @@ public class Server {
                 }
             } else if (line.startsWith("ACK:")) {
                 h.handleAck(line.substring(4));
+            } else if (line.startsWith("LIST_USERS:")) {
+                String roomName = line.substring(11);
+                h.listUsersInRoom(roomName);
+            } else if (line.startsWith("GET_HISTORY:")) {
+                String roomName = line.substring(12);
+                h.sendRoomHistory(roomName);
             }
         } catch (Exception e) {
             System.err.println("Error dispatching command from " + h.clientIp + ": " + e.getMessage());
@@ -651,6 +783,12 @@ public class Server {
             if (t != null) {
                 tokenToUser.remove(t);
                 tokenExpires.remove(t);
+            }
+            clientHeartbeatsLock.writeLock().lock();
+            try {
+                clientHeartbeats.remove(u);
+            } finally {
+                clientHeartbeatsLock.writeLock().unlock();
             }
             saveSessions();
         } finally {
@@ -702,11 +840,15 @@ public class Server {
     }
 
     private boolean isValidPassword(String p) {
-        if (p == null) return false;
-        // Enhanced password requirements
-        return p.length() >= 6 && p.length() <= 128 &&
-                !p.contains(":") && // Prevent protocol interference
-                p.trim().length() == p.length(); // No leading/trailing spaces
+        if (p == null || p.length() < 8 || p.length() > 128) {
+            return false;
+        }
+
+        return p.matches(".*[A-Z].*") && // Uppercase
+                p.matches(".*[a-z].*") && // Lowercase
+                p.matches(".*\\d.*") &&   // Digit
+                !p.contains(":") &&       // No protocol interference
+                p.trim().equals(p);       // No leading/trailing spaces
     }
 
     private boolean isValidRoomName(String rn) {
@@ -750,6 +892,12 @@ public class Server {
             globalLock.writeLock().lock();
             try {
                 pending.remove(id);
+                messageTimestampsLock.writeLock().lock();
+                try {
+                    messageTimestamps.remove(id);
+                } finally {
+                    messageTimestampsLock.writeLock().unlock();
+                }
             }
             finally {
                 globalLock.writeLock().unlock();
@@ -785,7 +933,28 @@ public class Server {
                     out.println("JOINED:" + name);
                 }
 
-                room.sendHistoryTo(this);
+                // NO HISTORY REPLAY - just send welcome message
+                out.println("SYSTEM:" + name + ":Welcome to " + name);
+
+                // Broadcast updated user list
+                broadcastUserList();
+            } finally {
+                globalLock.writeLock().unlock();
+            }
+        }
+
+        void rejoinRoom(String name) {
+            globalLock.writeLock().lock();
+            try {
+                Room room = rooms.get(name);
+                if (room != null) {
+                    room.addUser(this);
+                    joined.add(name);
+                    updateUserRooms();
+                    out.println("REJOINED:" + name);
+                    // NO HISTORY REPLAY - just send welcome back message
+                    out.println("SYSTEM:" + name + ":Welcome back to " + name);
+                }
             } finally {
                 globalLock.writeLock().unlock();
             }
@@ -800,6 +969,7 @@ public class Server {
                     room.broadcast(username + " left", null);
                     out.println("LEFT:" + name);
                     updateUserRooms();
+                    broadcastUserList();
                     System.out.println(username + " left room: " + name);
                 }
             } finally {
@@ -815,10 +985,48 @@ public class Server {
                     String id = UUID.randomUUID().toString().substring(0, 8);
                     QueuedMessage qm = new QueuedMessage(roomName, username, msg, id);
                     pending.put(id, qm);
+                    messageTimestampsLock.writeLock().lock();
+                    try {
+                        messageTimestamps.put(id, System.currentTimeMillis());
+                    } finally {
+                        messageTimestampsLock.writeLock().unlock();
+                    }
                     room.broadcast(msg, username, id);
                 }
             } finally {
                 globalLock.writeLock().unlock();
+            }
+        }
+
+        void listUsersInRoom(String roomName) {
+            globalLock.readLock().lock();
+            try {
+                Room room = rooms.get(roomName);
+                if (room != null) {
+                    Set<String> roomUsers = room.getUsers().stream()
+                            .map(handler -> handler.username)
+                            .collect(Collectors.toSet());
+                    out.println("USERS:" + String.join(",", roomUsers));
+                } else {
+                    out.println("USERS:");
+                }
+            } finally {
+                globalLock.readLock().unlock();
+            }
+        }
+
+        void sendRoomHistory(String roomName) {
+            globalLock.readLock().lock();
+            try {
+                Room room = rooms.get(roomName);
+                if (room != null && joined.contains(roomName)) {
+                    String history = room.getHistoryAsString();
+                    out.println("HISTORY:" + history);
+                } else {
+                    out.println("HISTORY:");
+                }
+            } finally {
+                globalLock.readLock().unlock();
             }
         }
 
@@ -828,25 +1036,37 @@ public class Server {
                     out.println("SYSTEM:" + roomName + ":" + msg);
                 else
                     out.println("MESSAGE:" + roomName + ":" + sender + ":" + msg + ":" + msgId);
-            } else {
-                messageBuffer.get(username).add(new QueuedMessage(roomName, sender, msg, msgId));
             }
-        }
-
-        void replayBufferedMessages() {
-            List<QueuedMessage> buf = messageBuffer.get(username);
-            for (QueuedMessage qm : new ArrayList<>(buf)) {
-                if (qm.sender == null)
-                    out.println("SYSTEM:" + qm.room + ":" + qm.msg);
-                else
-                    out.println("MESSAGE:" + qm.room + ":" + qm.sender + ":" + qm.msg + ":" + qm.msgId);
-            }
-            buf.clear();
+            // REMOVED: Message buffering for offline users
         }
 
         private void updateUserRooms() {
             userRooms.put(username, new HashSet<>(joined));
             saveSessions();
+        }
+
+        private void broadcastUserList() {
+            globalLock.readLock().lock();
+            try {
+                Set<String> onlineUsers = new HashSet<>();
+                for (String user : connectedUsers.keySet()) {
+                    if (!connectedUsers.get(user).isEmpty()) {
+                        onlineUsers.add(user);
+                    }
+                }
+                String userList = "USERS:" + String.join(",", onlineUsers);
+
+                // Broadcast to all connected users
+                for (Set<ClientHandler> handlers : connectedUsers.values()) {
+                    for (ClientHandler handler : handlers) {
+                        if (handler.active) {
+                            handler.out.println(userList);
+                        }
+                    }
+                }
+            } finally {
+                globalLock.readLock().unlock();
+            }
         }
 
         void cleanup(boolean removeFromRooms) {
@@ -856,7 +1076,10 @@ public class Server {
                 Set<ClientHandler> set = connectedUsers.get(username);
                 if (set != null) {
                     set.remove(this);
-                    if (set.isEmpty()) connectedUsers.remove(username);
+                    if (set.isEmpty()) {
+                        connectedUsers.remove(username);
+                        clientHeartbeats.remove(username);
+                    }
                 }
                 if (removeFromRooms) {
                     for (String r : new ArrayList<>(joined)) {
@@ -867,6 +1090,7 @@ public class Server {
                         }
                     }
                     joined.clear();
+                    broadcastUserList();
                 }
             } finally {
                 globalLock.writeLock().unlock();
@@ -893,6 +1117,7 @@ public class Server {
 
         String getName() { return name; }
         boolean isAiRoom() { return aiRoom; }
+        Set<ClientHandler> getUsers() { return new HashSet<>(users); }
 
         void addUser(ClientHandler ch) {
             users.add(ch);
@@ -902,13 +1127,17 @@ public class Server {
             users.remove(ch);
         }
 
-        void sendHistoryTo(ClientHandler u) {
-            for (QueuedMessage qm : history) {
-                if (qm.sender == null)
-                    u.out.println("SYSTEM:" + qm.room + ":" + qm.msg);
-                else
-                    u.out.println("MESSAGE:" + qm.room + ":" + qm.sender + ":" + qm.msg + ":" + qm.msgId);
-            }
+        // REMOVED: sendHistoryTo method - no more automatic history replay
+
+        String getHistoryAsString() {
+            return history.stream()
+                    .map(qm -> {
+                        if (qm.sender == null)
+                            return "[SYSTEM] " + qm.msg;
+                        else
+                            return qm.sender + ": " + qm.msg;
+                    })
+                    .collect(Collectors.joining("|"));
         }
 
         void broadcast(String msg, String sender) {
@@ -920,28 +1149,39 @@ public class Server {
             history.add(qm);
             if (history.size() > MAX_HISTORY) history.remove(0);
 
+            System.out.println("DEBUG: Broadcasting message in room " + name + " from " + sender + ": " + msg);
+
             for (ClientHandler u : users) {
                 u.receiveMessage(name, sender, msg, msgId);
             }
 
             // Enhanced AI response with better error handling
             if (aiRoom && sender != null && !"Bot".equals(sender)) {
+                System.out.println("DEBUG: AI room detected, triggering AI response...");
                 Thread.startVirtualThread(() -> {
                     try {
                         String aiReply = getAIResponse(msg);
                         if (aiReply != null && !aiReply.isEmpty()) {
+                            System.out.println("DEBUG: AI replied: " + aiReply);
                             broadcast(aiReply, "Bot");
+                        } else {
+                            System.out.println("DEBUG: AI returned empty response");
                         }
                     } catch (Exception e) {
                         System.err.println("AI response error in room " + name + ": " + e.getMessage());
+                        e.printStackTrace();
                         broadcast("Sorry, I'm experiencing technical difficulties right now.", "Bot");
                     }
                 });
+            } else {
+                System.out.println("DEBUG: Not triggering AI - aiRoom: " + aiRoom + ", sender: " + sender);
             }
         }
 
         private String getAIResponse(String lastUserMsg) {
             try {
+                System.out.println("DEBUG: Attempting AI response for: " + lastUserMsg);
+
                 URL url = new URL(AI_ENDPOINT);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
@@ -949,7 +1189,7 @@ public class Server {
                 conn.setRequestProperty("User-Agent", "SecureChatServer/1.0");
                 conn.setDoOutput(true);
                 conn.setConnectTimeout(5000);
-                conn.setReadTimeout(15000); // Increased timeout
+                conn.setReadTimeout(15000);
 
                 // Enhanced security headers
                 conn.setRequestProperty("Accept", "application/json");
@@ -964,12 +1204,16 @@ public class Server {
                 body.put("stream", false);
                 body.put("options", new JSONObject().put("temperature", 0.7));
 
+                System.out.println("DEBUG: Sending request to AI service...");
+
                 try (OutputStream os = conn.getOutputStream()) {
                     os.write(body.toString().getBytes(StandardCharsets.UTF_8));
                     os.flush();
                 }
 
                 int responseCode = conn.getResponseCode();
+                System.out.println("DEBUG: AI service response code: " + responseCode);
+
                 if (responseCode != 200) {
                     System.err.println("AI API error: HTTP " + responseCode);
                     return "Sorry, AI service is temporarily unavailable.";
@@ -982,21 +1226,27 @@ public class Server {
                     while ((line = br.readLine()) != null) resp.append(line);
                 }
 
+                System.out.println("DEBUG: Raw AI response: " + resp.toString());
+
                 JSONObject jsonResp = new JSONObject(resp.toString());
                 String response = jsonResp.getString("response").trim();
 
                 // Sanitize AI response
                 response = sanitizeInput(response, MAX_MSG_LEN);
-                return response.isEmpty() ? "I'm not sure how to respond to that." : response;
+                String finalResponse = response.isEmpty() ? "I'm not sure how to respond to that." : response;
+
+                System.out.println("DEBUG: Final AI response: " + finalResponse);
+                return finalResponse;
 
             } catch (java.net.ConnectException e) {
-                System.err.println("AI service connection refused for room " + name);
-                return "Sorry, AI service is currently unavailable.";
+                System.err.println("AI service connection refused for room " + name + " - is Ollama running?");
+                return "Sorry, AI service is currently unavailable. Please make sure Ollama is running.";
             } catch (java.net.SocketTimeoutException e) {
                 System.err.println("AI service timeout for room " + name);
                 return "Sorry, AI service is taking too long to respond.";
             } catch (Exception e) {
                 System.err.println("AI request failed for room " + name + ": " + e.getMessage());
+                e.printStackTrace(); // More detailed error info
                 return "Sorry, I'm having trouble connecting to my AI service right now.";
             }
         }

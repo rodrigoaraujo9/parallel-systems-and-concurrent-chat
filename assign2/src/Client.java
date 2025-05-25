@@ -1,4 +1,4 @@
-// Client.java - Enhanced Security Version
+// Client.java - Enhanced Security Version with simplified message handling
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +31,11 @@ public class Client {
     private final Set<String>   aiRooms        = new HashSet<>();
     private final ReadWriteLock roomsLock      = new ReentrantReadWriteLock();
 
+    // Enhanced fault tolerance
+    private final Set<String> currentUsers = new HashSet<>();
+    private volatile long lastHeartbeat = System.currentTimeMillis();
+    private volatile boolean expectingRoomUserList = false;
+
     // ANSI color codes
     private static final String RESET  = "\u001B[0m";
     private static final String BOLD   = "\u001B[1m";
@@ -39,6 +44,7 @@ public class Client {
     private static final String RED    = "\u001B[31m";
     private static final String BLUE   = "\u001B[34m";
     private static final String CYAN   = "\u001B[36m";
+    private static final String PURPLE = "\u001B[35m";
 
     // Store multiple tokens with proper encryption
     private final Properties tokens = new Properties();
@@ -59,6 +65,7 @@ public class Client {
             System.err.println("java -Djavax.net.ssl.trustStore=chatserver.jks -Djavax.net.ssl.trustStorePassword=password Client");
         }
     }
+
     public void start() throws IOException {
         try {
             console = new BufferedReader(new InputStreamReader(System.in));
@@ -90,6 +97,9 @@ public class Client {
             return;
         }
 
+        // Start heartbeat monitor
+        Thread.startVirtualThread(this::heartbeatMonitor);
+
         // Message receiver in a virtual thread
         Thread.startVirtualThread(() -> {
             try {
@@ -97,7 +107,7 @@ public class Client {
             } catch (IOException e) {
                 System.err.println(RED + "Connection lost: " + e.getMessage() + RESET);
                 if (running) {
-                    reconnect();
+                    handleConnectionLoss();
                 }
             }
         });
@@ -193,6 +203,52 @@ public class Client {
         }
     }
 
+    private void handleConnectionLoss() {
+        System.err.println(YELLOW + "Connection lost. Attempting recovery..." + RESET);
+
+        // Save current state for reconnection
+        String lastRoom = currentRoom;
+        Set<String> roomsToRejoin = new HashSet<>(joinedRooms);
+
+        while (running) {
+            try {
+                reconnect();
+
+                // Restore state - rejoin rooms (server will send welcome messages)
+                for (String room : roomsToRejoin) {
+                    out.println("REJOIN:" + room);
+                }
+
+                if (lastRoom != null) {
+                    currentRoom = lastRoom;
+                }
+
+                // Restart message handling
+                Thread.startVirtualThread(() -> {
+                    try {
+                        receiveMessages();
+                    } catch (IOException e) {
+                        System.err.println(RED + "Connection lost again: " + e.getMessage() + RESET);
+                        if (running) {
+                            handleConnectionLoss();
+                        }
+                    }
+                });
+
+                break;
+
+            } catch (Exception e) {
+                System.err.println(RED + "Recovery failed: " + e.getMessage() + ". Retrying..." + RESET);
+                try {
+                    Thread.sleep(3000);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
     private void reconnect() {
         int attemptCount = 0;
         long baseDelay = 2000; // 2 seconds
@@ -217,30 +273,9 @@ public class Client {
                 connectSecure();
                 authenticate();
 
-                System.err.println(GREEN + "Reconnected!" + RESET);
+                System.err.println(GREEN + "Connection restored!" + RESET);
 
-                // Re-join any rooms we were in before
-                roomsLock.readLock().lock();
-                try {
-                    for (String room : joinedRooms) {
-                        out.println("JOIN:" + room);
-                    }
-                } finally {
-                    roomsLock.readLock().unlock();
-                }
-
-                // Restart the message receiver thread
-                Thread.startVirtualThread(() -> {
-                    try {
-                        receiveMessages();
-                    } catch (IOException e) {
-                        System.err.println(RED + "Connection lost: " + e.getMessage() + RESET);
-                        if (running) {
-                            reconnect();
-                        }
-                    }
-                });
-
+                // Don't manually rejoin rooms here - let handleConnectionLoss do it
                 return;
 
             } catch (InterruptedException e) {
@@ -323,9 +358,15 @@ public class Client {
                 continue;
             }
 
-            System.out.print("Enter your password: ");
+            System.out.print("Enter your password (8+ chars, mixed case, number required): ");
             String pass = readPassword();
             if (pass == null) throw new IOException("Input stream closed");
+
+            // Enhanced client-side password validation
+            if (!isValidPassword(pass)) {
+                System.out.println(RED + "Password must be 8+ characters with uppercase, lowercase, and digit" + RESET);
+                continue;
+            }
 
             out.println("LOGIN:" + user + ":" + pass);
             String response = in.readLine();
@@ -362,10 +403,30 @@ public class Client {
         return cleaned.length() >= 3 && cleaned.length() <= 50 ? cleaned : "";
     }
 
+    private boolean isValidPassword(String password) {
+        if (password == null || password.length() < 8 || password.length() > 128) {
+            return false;
+        }
+
+        return password.matches(".*[A-Z].*") && // Uppercase
+                password.matches(".*[a-z].*") && // Lowercase
+                password.matches(".*\\d.*") &&   // Digit
+                !password.contains(":") &&       // No protocol interference
+                password.trim().equals(password); // No leading/trailing spaces
+    }
+
     private String readPassword() throws IOException {
-        // For production, consider using Console.readPassword() for better security
-        // This is a simplified version
-        return console.readLine();
+        Console systemConsole = System.console();
+        if (systemConsole != null) {
+            char[] password = systemConsole.readPassword();
+            String result = new String(password);
+            Arrays.fill(password, ' '); // Clear password from memory
+            return result;
+        } else {
+            // Fallback for IDEs - warn user
+            System.err.println(YELLOW + "WARNING: Password will be visible in console!" + RESET);
+            return console.readLine();
+        }
     }
 
     private void receiveMessages() throws IOException {
@@ -373,6 +434,8 @@ public class Client {
             try {
                 String msg;
                 while ((msg = in.readLine()) != null) {
+                    lastHeartbeat = System.currentTimeMillis();
+
                     if (msg.startsWith("MESSAGE:")) {
                         String body = msg.substring("MESSAGE:".length());
                         String[] parts = body.split(":", 4);
@@ -389,6 +452,16 @@ public class Client {
                         if (p.length == 2) printSystemMessage(p[0], p[1]);
                     } else if (msg.startsWith("ROOMS:")) {
                         updateAvailableRooms(msg.substring("ROOMS:".length()));
+                    } else if (msg.startsWith("USERS:")) {
+                        String userList = msg.substring("USERS:".length());
+                        if (expectingRoomUserList) {
+                            // This is a response to /list command for current room
+                            displayRoomUsers(userList);
+                            expectingRoomUserList = false;
+                        } else {
+                            // This is the general online users update
+                            updateCurrentUsers(userList);
+                        }
                     } else if (msg.startsWith("CREATED:")) {
                         String room = msg.substring("CREATED:".length());
                         handleJoinEvent(room, false);
@@ -400,6 +473,10 @@ public class Client {
                         String room = msg.substring("LEFT:".length());
                         removeJoinedRoom(room);
                         System.out.println(YELLOW + "Left " + room + RESET);
+                    } else if (msg.startsWith("HISTORY:")) {
+                        displayHistory(msg.substring("HISTORY:".length()));
+                    } else if (msg.startsWith("HEARTBEAT")) {
+                        out.println("HEARTBEAT_ACK");
                     } else if (msg.equals("BYE")) {
                         System.out.println(GREEN + "Goodbye!" + RESET);
                         running = false;
@@ -422,7 +499,7 @@ public class Client {
             } catch (IOException e) {
                 if (running) {
                     System.err.println(RED + "Connection lost: " + e.getMessage() + RESET);
-                    reconnect();
+                    handleConnectionLoss();
                     return;
                 }
             }
@@ -451,7 +528,7 @@ public class Client {
             // Check connection health before sending
             if (!isConnectionHealthy()) {
                 System.err.println(RED + "Connection lost while typing. Reconnecting..." + RESET);
-                reconnect();
+                handleConnectionLoss();
                 continue;
             }
 
@@ -460,12 +537,13 @@ public class Client {
             } else if (currentRoom != null) {
                 try {
                     out.println("MESSAGE:" + currentRoom + ":" + line);
+
                     if (out.checkError()) {
                         throw new IOException("Failed to send message - connection error");
                     }
                 } catch (Exception e) {
                     System.err.println(RED + "Failed to send message: " + e.getMessage() + RESET);
-                    reconnect();
+                    handleConnectionLoss();
                 }
             } else {
                 System.out.println(YELLOW + "You must join a room first (/join <room>)" + RESET);
@@ -479,7 +557,8 @@ public class Client {
                     !socket.isClosed() &&
                     socket.isConnected() &&
                     !socket.isInputShutdown() &&
-                    !socket.isOutputShutdown();
+                    !socket.isOutputShutdown() &&
+                    (System.currentTimeMillis() - lastHeartbeat) < 60000; // 1 minute timeout
         } catch (Exception e) {
             return false;
         }
@@ -543,24 +622,44 @@ public class Client {
                 }
             }
             case "rooms" -> showRooms();
+            case "users", "who" -> showCurrentUsers();
+            case "list" -> {
+                if (currentRoom != null) {
+                    expectingRoomUserList = true;
+                    out.println("LIST_USERS:" + currentRoom);
+                } else {
+                    System.out.println(YELLOW + "You must be in a room to list users." + RESET);
+                }
+            }
+            case "history" -> {
+                if (currentRoom != null) {
+                    out.println("GET_HISTORY:" + currentRoom);
+                } else {
+                    System.out.println(YELLOW + "You must be in a room to view history." + RESET);
+                }
+            }
             case "logout" -> {
                 running = false;
                 out.println("LOGOUT");
                 removeToken(username);
             }
             case "help" -> showHelp();
-            default -> System.out.println(RED + "Unknown command. Type /help" + RESET);
+            default -> {
+                System.out.println(RED + "Unknown command: '" + cmd + "'. Type /help for available commands." + RESET);
+                showAvailableCommands();
+            }
         }
     }
 
     private void printMessage(String room, String sender, String content) {
+        // Remove message ID if present at the end
         if (content.matches(".*:[0-9A-Fa-f]{8}$")) {
             int idx = content.lastIndexOf(':');
             content = content.substring(0, idx);
         }
         String prefix      = sender.equals("Bot") ? "🤖 " : "";
         String senderColor = sender.equals("Bot") ? BLUE
-                : sender.equals(username) ? GREEN : RESET;
+                : sender.equals(username) ? GREEN : RED; // Other users are red
         String header = room.equals(currentRoom)
                 ? senderColor + prefix + sender + ": " + RESET
                 : CYAN + "[" + room + "] " + RESET
@@ -588,6 +687,55 @@ public class Client {
         } finally {
             roomsLock.writeLock().unlock();
         }
+    }
+
+    private void displayRoomUsers(String userList) {
+        if (currentRoom != null) {
+            System.out.println(PURPLE + "Users in " + currentRoom + ": " + RESET);
+            if (userList == null || userList.isBlank()) {
+                System.out.println(YELLOW + "No users in this room." + RESET);
+            } else {
+                String[] users = userList.split(",");
+                for (String user : users) {
+                    if (!user.trim().isEmpty()) {
+                        String color = user.trim().equals(username) ? GREEN : RED;
+                        System.out.println("  " + color + user.trim() + RESET);
+                    }
+                }
+            }
+        }
+    }
+
+    private void updateCurrentUsers(String userList) {
+        synchronized (currentUsers) {
+            currentUsers.clear();
+            if (userList != null && !userList.isBlank()) {
+                currentUsers.addAll(Arrays.asList(userList.split(",")));
+            }
+        }
+    }
+
+    private void showCurrentUsers() {
+        synchronized (currentUsers) {
+            if (currentUsers.isEmpty()) {
+                System.out.println(YELLOW + "No users currently online." + RESET);
+            } else {
+                System.out.println(PURPLE + "Online users: " + String.join(", ", currentUsers) + RESET);
+            }
+        }
+    }
+
+    private void displayHistory(String historyData) {
+        System.out.println(CYAN + "=== Room History ===" + RESET);
+        if (historyData.isEmpty()) {
+            System.out.println(YELLOW + "No message history available." + RESET);
+        } else {
+            String[] messages = historyData.split("\\|");
+            for (String msg : messages) {
+                System.out.println(msg);
+            }
+        }
+        System.out.println(CYAN + "=== End History ===" + RESET);
     }
 
     private String formatRoomList() {
@@ -630,6 +778,12 @@ public class Client {
                 + "                      - Leave current room");
         System.out.println(CYAN + "/rooms" + RESET
                 + "                      - Show room info");
+        System.out.println(PURPLE + "/users, /who" + RESET
+                + "                - Show online users");
+        System.out.println(PURPLE + "/list" + RESET
+                + "                       - Show users in current room");
+        System.out.println(CYAN + "/history" + RESET
+                + "                    - Show room message history");
         System.out.println(RED + "/logout" + RESET
                 + "                     - Exit and clear this account");
         System.out.println("/help" + "                       - Show this help");
@@ -638,9 +792,32 @@ public class Client {
         System.out.println("• AI rooms are marked with 🤖 and (AI) indicators");
         System.out.println("• Each account is saved separately");
         System.out.println("• Client will automatically reconnect if connection is lost");
+        System.out.println("• Fresh start on each reconnection - no message replay");
+    }
+
+    private void showAvailableCommands() {
+        System.out.println(CYAN + "Available commands: /join, /leave, /rooms, /users, /list, /history, /logout, /help" + RESET);
     }
 
     private String printBold(String msg) { return BOLD + msg + RESET; }
+
+    // Enhanced fault tolerance methods
+    private void heartbeatMonitor() {
+        while (running) {
+            try {
+                Thread.sleep(30000); // Send heartbeat every 30 seconds
+                if (isConnectionHealthy() && out != null) {
+                    out.println("HEARTBEAT");
+                    if (out.checkError()) {
+                        System.err.println(YELLOW + "Heartbeat failed - connection may be lost" + RESET);
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
 
     // Thread-safe helpers for joinedRooms
     private void addJoinedRoom(String room) {
