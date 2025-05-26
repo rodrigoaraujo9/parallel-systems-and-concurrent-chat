@@ -75,10 +75,15 @@ A robust, enterprise-grade secure chat server implementation in Java featuring S
 
 ```bash
 # Generate keystore with self-signed certificate
-keytool -genkeypair -alias chatserver -keyalg RSA -keysize 2048 \
-        -validity 365 -keystore chatserver.jks \
-        -dname "CN=localhost,OU=ChatServer,O=YourOrg,C=US" \
-        -storepass password -keypass password
+keytool -genkeypair \
+  -alias chatserver \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 365 \
+  -keystore chatserver.jks \
+  -storepass password \
+  -keypass password \
+  -dname "CN=localhost, OU=ChatServer, O=MyOrg, L=City, ST=State, C=US"
 ```
 
 ### 2. Set Up Ollama (Optional - for AI features)
@@ -91,6 +96,15 @@ ollama run llama3.2:1b
 ```
 
 ## Running the Application
+
+### Building
+
+Compile both Java files:
+
+```sh
+# From inside the 'src' directory, run:
+./build.sh
+```
 
 ### Start the Server
 
