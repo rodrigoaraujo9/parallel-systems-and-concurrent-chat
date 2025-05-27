@@ -1,43 +1,4 @@
-### AI Output Stream Management
-
-AI responses use same output stream protection as regular messages:
-
-````java
-// Lines 1225-1270 - Server.java (getAIResponse)
-private String getAIResponse(String lastUserMsg) {
-    try {
-        System.out.println("DEBUG: Attempting AI response for: " + lastUserMsg);
-
-        URL url = new URL(AI_ENDPOINT);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("User-Agent", "SecureChatServer/1.0");
-        conn.setDoOutput(true);
-        conn.setConnectTimeout(5000);
-        conn.setReadTimeout(15000);
-
-        // Sanitize and limit the prompt
-        String sanitizedMsg = sanitizeInput(lastUserMsg, 500);
-        String fullPrompt = aiPrompt + "\nUser: " + sanitizedMsg + "\nBot:";
-
-        // HTTP request processing...
-
-        String response = jsonResp.getString("response").trim();
-        response = sanitizeInput(response, MAX_MSG_LEN);
-        String finalResponse = response.isEmpty() ? "I'm not sure how to respond to that." : response;
-
-        return finalResponse;
-
-    } catch (java.net.ConnectException e) {
-        return "Sorry, AI service is currently unavailable. Please make sure Ollama is running.";
-    } catch (java.net.SocketTimeoutException e) {
-        return "Sorry, AI service is taking too long to respond.";
-    } catch (Exception e) {
-        return "Sorry, I'm having trouble connecting to my AI service right now.";
-    }
-}
-```# Chat Server Concurrency Report
+# Chat Server Concurrency Report
 
 ## Authentication (Threads, Shared Data Structures)
 
@@ -67,10 +28,9 @@ while (true) {
         System.err.println("Error accepting client: " + e.getMessage());
     }
 }
-````
+```
 
 ### Shared Data Structures with Synchronization
-
 Rate limiting uses synchronized collections to prevent concurrent modification:
 
 ```java
@@ -91,7 +51,6 @@ synchronized (loginFailuresByIp) {
 ```
 
 ### Global Read-Write Lock for User Data
-
 Protects user credentials and session data from race conditions:
 
 ```java
@@ -124,7 +83,6 @@ try {
 ```
 
 ### Session Token Management
-
 Thread-safe token creation and validation with expiration tracking:
 
 ```java
@@ -149,10 +107,32 @@ private String createUserToken(String u) {
 }
 ```
 
+### Race Condition Prevention - Authentication
+Prevents duplicate user creation during concurrent registration:
+
+```java
+// Lines 560-580 - Server.java (handleClient authentication)
+globalLock.writeLock().lock();  // Exclusive write access
+try {
+    boolean isNew = !userSalt.containsKey(u);  // Atomic check
+    if (isNew) {
+        // Only one thread can register this username
+        userSalt.put(u, saltHex);
+        userHash.put(u, hashHex);
+        saveUsers();  // Atomic file write
+    } else {
+        // Password verification for existing user
+        byte[] expected = fromHex(userHash.get(u));
+        // ... verification logic
+    }
+} finally {
+    globalLock.writeLock().unlock();
+}
+```
+
 ## Join Operations (Threads, Shared Data Structures)
 
 ### Room Creation Threading
-
 Uses global write lock to prevent concurrent room creation conflicts:
 
 ```java
@@ -192,7 +172,6 @@ void createOrJoin(String name, boolean isAI, String prompt) {
 ```
 
 ### Shared Room Data Structures
-
 Connected users and room memberships protected by global lock:
 
 ```java
@@ -228,7 +207,6 @@ private void broadcastUserList() {
 ```
 
 ### Client-Side Room State Synchronization
-
 Client uses read-write locks to protect room collections:
 
 ```java
@@ -263,10 +241,31 @@ private void showRooms() {
 }
 ```
 
+### Race Condition Prevention - Room Creation
+Prevents multiple clients from creating the same room simultaneously:
+
+```java
+// Lines 945-970 - Server.java (ClientHandler.createOrJoin)
+void createOrJoin(String name, boolean isAI, String prompt) {
+    globalLock.writeLock().lock();  // CRITICAL: Exclusive access
+    try {
+        boolean created = false;
+        if (!rooms.containsKey(name)) {  // Check-then-act protected by lock
+            rooms.put(name, new Room(name, isAI, aiPrompt));
+            created = true;
+        }
+        Room room = rooms.get(name);  // Safe to get after check
+        room.addUser(this);
+        joined.add(name);
+    } finally {
+        globalLock.writeLock().unlock();
+    }
+}
+```
+
 ## Message Reception (Threads, Shared Data, Output Stream)
 
 ### Client Message Reception Threading
-
 Separate thread handles incoming messages to prevent blocking user input:
 
 ```java
@@ -287,7 +286,6 @@ handleInput();
 ```
 
 ### Message Acknowledgment with Shared Data
-
 Server tracks pending messages with dual-lock protection:
 
 ```java
@@ -319,7 +317,6 @@ void sendMessage(String roomName, String msg) {
 ```
 
 ### Output Stream Thread Safety
-
 Each ClientHandler has dedicated output stream with concurrent access protection:
 
 ```java
@@ -347,7 +344,6 @@ void broadcast(String msg, String sender, String msgId) {
 ```
 
 ### Message Timeout Monitoring
-
 Background thread monitors unacknowledged messages:
 
 ```java
@@ -381,7 +377,6 @@ private void messageTimeoutTask() {
 ```
 
 ### Acknowledgment Handling
-
 Thread-safe cleanup when messages are acknowledged:
 
 ```java
@@ -403,10 +398,30 @@ void handleAck(String id) {
 }
 ```
 
+### Race Condition Prevention - Message Acknowledgment
+Prevents lost message tracking with dual-lock protection:
+
+```java
+// Lines 905-920 - Server.java (ClientHandler.handleAck)
+void handleAck(String id) {
+    globalLock.writeLock().lock();  // First lock
+    try {
+        pending.remove(id);  // Remove from pending messages
+        messageTimestampsLock.writeLock().lock();  // Second lock
+        try {
+            messageTimestamps.remove(id);  // Consistent removal
+        } finally {
+            messageTimestampsLock.writeLock().unlock();
+        }
+    } finally {
+        globalLock.writeLock().unlock();
+    }
+}
+```
+
 ## AI Rooms (Threads, Shared Data, Output Stream)
 
 ### AI Response Threading
-
 AI HTTP requests run in separate virtual threads to prevent blocking chat:
 
 ```java
@@ -434,7 +449,6 @@ if (aiRoom && sender != null && !"Bot".equals(sender)) {
 ```
 
 ### AI Room Shared Data
-
 Room history and user lists shared between AI and normal message flows:
 
 ```java
@@ -445,7 +459,7 @@ private class Room {
     private final String aiPrompt;
     private final Set<ClientHandler> users = new HashSet<>();
     private final List<QueuedMessage> history = new ArrayList<>();
-
+    
     void broadcast(String msg, String sender, String msgId) {
         QueuedMessage qm = new QueuedMessage(name, sender, msg, msgId);
         history.add(qm);
@@ -462,39 +476,50 @@ private class Room {
 ```
 
 ### AI Output Stream Management
-
 AI responses use same output stream protection as regular messages:
 
 ```java
-// Line 1200+ - Server.java (getAIResponse)
+// Lines 1225-1270 - Server.java (getAIResponse)
 private String getAIResponse(String lastUserMsg) {
     try {
+        System.out.println("DEBUG: Attempting AI response for: " + lastUserMsg);
+
         URL url = new URL(AI_ENDPOINT);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("User-Agent", "SecureChatServer/1.0");
+        conn.setDoOutput(true);
         conn.setConnectTimeout(5000);
         conn.setReadTimeout(15000);
 
+        // Sanitize and limit the prompt
+        String sanitizedMsg = sanitizeInput(lastUserMsg, 500);
+        String fullPrompt = aiPrompt + "\nUser: " + sanitizedMsg + "\nBot:";
+        
         // HTTP request processing...
-
+        
         String response = jsonResp.getString("response").trim();
-        return sanitizeInput(response, MAX_MSG_LEN);
+        response = sanitizeInput(response, MAX_MSG_LEN);
+        String finalResponse = response.isEmpty() ? "I'm not sure how to respond to that." : response;
 
+        return finalResponse;
+        
     } catch (java.net.ConnectException e) {
-        return "Sorry, AI service is currently unavailable.";
+        return "Sorry, AI service is currently unavailable. Please make sure Ollama is running.";
+    } catch (java.net.SocketTimeoutException e) {
+        return "Sorry, AI service is taking too long to respond.";
     } catch (Exception e) {
-        return "Sorry, I'm having trouble connecting to my AI service.";
+        return "Sorry, I'm having trouble connecting to my AI service right now.";
     }
 }
 ```
 
 ### Client AI Room Identification
-
 Client tracks AI rooms with thread-safe collections:
 
 ```java
-// Line 30+ - Client.java
-private final Set<String> aiRooms = new HashSet<>();
-
+// Lines 680-700 - Client.java
 private void updateAvailableRooms(String list) {
     roomsLock.writeLock().lock();
     try {
@@ -502,8 +527,11 @@ private void updateAvailableRooms(String list) {
         aiRooms.clear();
         if (list != null && !list.isBlank()) {
             for (String token : list.split(",")) {
+                if (token.isBlank()) continue;
                 boolean isAI = token.endsWith(":AI");
-                String roomName = isAI ? token.substring(0, token.length() - 3) : token;
+                String roomName = isAI
+                        ? token.substring(0, token.length() - 3)
+                        : token;
                 availableRooms.add(roomName);
                 if (isAI) aiRooms.add(roomName);
             }
@@ -514,140 +542,176 @@ private void updateAvailableRooms(String list) {
 }
 ```
 
-## Race Condition Prevention
+## Heartbeat & Connection Monitoring (Threads, Shared Data, Output Stream)
 
-### Concurrent Room Creation Race Condition
-
-Prevents multiple clients from creating the same room simultaneously:
+### Heartbeat Threading
+Background threads monitor connection health without blocking main operations:
 
 ```java
-// Lines 945-970 - Server.java (ClientHandler.createOrJoin)
-void createOrJoin(String name, boolean isAI, String prompt) {
-    globalLock.writeLock().lock();  // CRITICAL: Exclusive access
-    try {
-        boolean created = false;
-        if (!rooms.containsKey(name)) {  // Check-then-act protected by lock
-            rooms.put(name, new Room(name, isAI, aiPrompt));
-            created = true;
+// Lines 319-323 - Server.java (start method)
+Thread.startVirtualThread(this::sessionCleanupTask);
+Thread.startVirtualThread(this::connectionCleanupTask);
+Thread.startVirtualThread(this::heartbeatMonitorTask);
+Thread.startVirtualThread(this::messageTimeoutTask);
+```
+
+### Server-Side Heartbeat Monitoring
+Detects stale connections and cleans up resources:
+
+```java
+// Lines 375-410 - Server.java
+private void heartbeatMonitorTask() {
+    while (true) {
+        try {
+            Thread.sleep(HEARTBEAT_INTERVAL);
+            long now = System.currentTimeMillis();
+
+            // Check for stale connections with proper synchronization
+            clientHeartbeatsLock.writeLock().lock();
+            try {
+                Iterator<Map.Entry<String, Long>> it = clientHeartbeats.entrySet().iterator();
+                while (it.hasNext()) {
+                    Map.Entry<String, Long> entry = it.next();
+                    if (now - entry.getValue() > HEARTBEAT_INTERVAL * 2) {
+                        String user = entry.getKey();
+                        System.out.println("Client " + user + " appears disconnected (no heartbeat)");
+                        it.remove();
+
+                        // Cleanup user connections
+                        globalLock.writeLock().lock();
+                        try {
+                            Set<ClientHandler> handlers = connectedUsers.get(user);
+                            if (handlers != null) {
+                                for (ClientHandler handler : new ArrayList<>(handlers)) {
+                                    handler.cleanup(false); // Don't remove from rooms for reconnection
+                                }
+                            }
+                        } finally {
+                            globalLock.writeLock().unlock();
+                        }
+                    }
+                }
+            } finally {
+                clientHeartbeatsLock.writeLock().unlock();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            break;
         }
-        Room room = rooms.get(name);  // Safe to get after check
-        room.addUser(this);
-        joined.add(name);
-    } finally {
-        globalLock.writeLock().unlock();
     }
 }
 ```
 
-### User Registration Race Condition
-
-Prevents duplicate user creation during concurrent registration:
+### Shared Heartbeat Data Structures
+Client heartbeat timestamps protected by dedicated read-write lock:
 
 ```java
-// Lines 560-580 - Server.java (handleClient authentication)
-globalLock.writeLock().lock();  // Exclusive write access
+// Lines 108-109 - Server.java
+private final Map<String, Long> clientHeartbeats = new HashMap<>();
+private final ReadWriteLock clientHeartbeatsLock = new ReentrantReadWriteLock();
+
+// Lines 680-690 - Server.java (handleClient heartbeat handling)
+else if (line.startsWith("HEARTBEAT")) {
+    clientHeartbeatsLock.writeLock().lock();
+    try {
+        clientHeartbeats.put(user, System.currentTimeMillis());
+    } finally {
+        clientHeartbeatsLock.writeLock().unlock();
+    }
+    if (line.equals("HEARTBEAT")) {
+        out.println("HEARTBEAT_ACK");
+    }
+}
+```
+
+### Client-Side Heartbeat Threading
+Client sends periodic heartbeats to maintain connection:
+
+```java
+// Lines 100-102 - Client.java
+Thread.startVirtualThread(this::heartbeatMonitor);
+
+// Lines 760-775 - Client.java
+private void heartbeatMonitor() {
+    while (running) {
+        try {
+            Thread.sleep(30000); // Send heartbeat every 30 seconds
+            if (isConnectionHealthy() && out != null) {
+                out.println("HEARTBEAT");
+                if (out.checkError()) {
+                    System.err.println(YELLOW + "Heartbeat failed - connection may be lost" + RESET);
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            break;
+        }
+    }
+}
+```
+
+### Heartbeat Output Stream Management
+Heartbeat responses use same output stream protection:
+
+```java
+// Lines 420-440 - Client.java (receiveMessages)
+else if (msg.startsWith("HEARTBEAT")) {
+    out.println("HEARTBEAT_ACK");
+    lastHeartbeat = System.currentTimeMillis();
+}
+
+// Lines 553-560 - Client.java
+private boolean isConnectionHealthy() {
+    try {
+        return socket != null &&
+               !socket.isClosed() &&
+               socket.isConnected() &&
+               !socket.isInputShutdown() &&
+               !socket.isOutputShutdown() &&
+               (System.currentTimeMillis() - lastHeartbeat) < 60000; // 1 minute timeout
+    } catch (Exception e) {
+        return false;
+    }
+}
+```
+
+### Race Condition Prevention - Heartbeat Tracking
+Prevents corrupted heartbeat timestamps during concurrent updates:
+
+```java
+// Lines 680-690 - Server.java (handleClient)
+clientHeartbeatsLock.writeLock().lock();  // Exclusive access for timestamp update
 try {
-    boolean isNew = !userSalt.containsKey(u);  // Atomic check
-    if (isNew) {
-        // Only one thread can register this username
-        userSalt.put(u, saltHex);
-        userHash.put(u, hashHex);
-        saveUsers();  // Atomic file write
-    } else {
-        // Password verification for existing user
-        byte[] expected = fromHex(userHash.get(u));
-        // ... verification logic
+    clientHeartbeats.put(user, System.currentTimeMillis());  // Atomic timestamp update
+} finally {
+    clientHeartbeatsLock.writeLock().unlock();
+}
+
+// Lines 375-410 - Server.java (heartbeatMonitorTask)
+clientHeartbeatsLock.writeLock().lock();  // Exclusive access for cleanup
+try {
+    Iterator<Map.Entry<String, Long>> it = clientHeartbeats.entrySet().iterator();
+    while (it.hasNext()) {
+        // Safe iteration and removal during cleanup
+        if (now - entry.getValue() > HEARTBEAT_INTERVAL * 2) {
+            it.remove();  // Thread-safe removal
+        }
     }
 } finally {
-    globalLock.writeLock().unlock();
+    clientHeartbeatsLock.writeLock().unlock();
 }
 ```
 
-### Connection Counting Race Condition
-
-Prevents inaccurate connection counts with synchronized blocks:
-
-```java
-// Lines 330-340 - Server.java
-synchronized (connectionsPerIp) {  // Atomic check-and-increment
-    int current = connectionsPerIp.getOrDefault(clientIp, 0);
-    if (current >= MAX_CONN_PER_IP) {
-        client.close();
-        continue;
-    }
-    connectionsPerIp.put(clientIp, current + 1);  // Atomic increment
-}
-
-// Lines 700-710 - Server.java (cleanup in finally block)
-synchronized (connectionsPerIp) {  // Atomic decrement
-    Integer count = connectionsPerIp.get(clientIp);
-    if (count != null) {
-        if (count <= 1) {
-            connectionsPerIp.remove(clientIp);
-        } else {
-            connectionsPerIp.put(clientIp, count - 1);  // Atomic decrement
-        }
-    }
-}
-```
-
-### Message Acknowledgment Race Condition
-
-Prevents lost message tracking with dual-lock protection:
-
-```java
-// Lines 905-920 - Server.java (ClientHandler.handleAck)
-void handleAck(String id) {
-    globalLock.writeLock().lock();  // First lock
-    try {
-        pending.remove(id);  // Remove from pending messages
-        messageTimestampsLock.writeLock().lock();  // Second lock
-        try {
-            messageTimestamps.remove(id);  // Consistent removal
-        } finally {
-            messageTimestampsLock.writeLock().unlock();
-        }
-    } finally {
-        globalLock.writeLock().unlock();
-    }
-}
-```
-
-### Client Room State Race Condition
-
-Prevents corrupted room collections on client side:
-
-```java
-// Lines 780-800 - Client.java
-private void removeJoinedRoom(String room) {
-    roomsLock.writeLock().lock();  // Exclusive modification
-    try {
-        joinedRooms.remove(room);
-        if (room.equals(currentRoom)) {  // Check-then-act protected
-            if (!joinedRooms.isEmpty()) {
-                currentRoom = joinedRooms.iterator().next();
-            } else {
-                currentRoom = null;
-            }
-        }
-    } finally {
-        roomsLock.writeLock().unlock();
-    }
-}
-```
-
-## Summary
+## Synchronization Summary
 
 **Locks Implemented:**
-
 - `globalLock` (ReadWriteLock): Protects user data, rooms, connections
-- `messageTimestampsLock` (ReadWriteLock): Guards message timeout tracking
+- `messageTimestampsLock` (ReadWriteLock): Guards message timeout tracking  
 - `clientHeartbeatsLock` (ReadWriteLock): Synchronizes heartbeat monitoring
 - `roomsLock` (ReadWriteLock): Client-side room collection protection
 - `synchronized` blocks: Rate limiting and connection counting
 
 **Shared Data Structures:**
-
 - User authentication maps (salt, hash, tokens)
 - Room collections and user memberships
 - Connection tracking and rate limiting maps
@@ -655,8 +719,8 @@ private void removeJoinedRoom(String room) {
 - Heartbeat timestamps
 
 **Thread Safety Guarantees:**
-
 - Concurrent reads with exclusive writes via ReadWriteLock
 - Atomic operations on synchronized collections
 - Isolated per-client processing with virtual threads
 - Non-blocking AI processing with fault tolerance
+- Race condition prevention through proper locking patterns
