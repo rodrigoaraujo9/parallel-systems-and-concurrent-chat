@@ -45,7 +45,7 @@ The server runs an infinite loop waiting for new client connections, and when so
 The server accepts connections on a dedicated SSL socket and spawns lightweight virtual threads:
 
 ```java
-// Main server loop - accepts connections
+// Main server loop - accepts connections 324 (in Server)
 while (true) {
     Socket client = serverSocket.accept();
     String clientIp = client.getInetAddress().getHostAddress();
@@ -70,6 +70,7 @@ Once a client is accepted, the server creates dedicated input/output streams wra
 Each connection is handled independently with dedicated I/O streams:
 
 ```java
+// 475 (in Server)
 private void handleClient(Socket sock, String clientIp) {
     try (BufferedReader in = new BufferedReader(
             new InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8));
@@ -102,6 +103,7 @@ The client needs to establish a secure, encrypted connection to the server using
 The client establishes a secure SSL connection with automatic reconnection:
 
 ```java
+// 119 (in Client)
 private void connectSecure() throws IOException {
     // SSL context setup with TLS 1.3
     SSLContext sslContext = SSLContext.getInstance("TLSv1.3");
@@ -128,6 +130,7 @@ The server needs to send messages to multiple clients simultaneously when someon
 
 **Server → Client Broadcasting:**
 ```java
+// 876 (in Server)
 class ClientHandler {
     void receiveMessage(String roomName, String sender, String msg, String msgId) {
         if (active) {
@@ -149,7 +152,7 @@ The client runs two separate processes: one thread continuously listens for inco
 
 **Client → Server Messaging:**
 ```java
-// Main thread handles user input
+// Main thread handles user input - 521 (in Client)
 private void handleInput() throws IOException {
     String line;
     while (running && (line = console.readLine()) != null) {
@@ -182,7 +185,7 @@ To detect when clients disconnect unexpectedly (like closing their laptop), the 
 
 **Heartbeat System:**
 ```java
-// Server sends periodic heartbeats
+// Server sends periodic heartbeats - 375 (in Server)
 private void heartbeatMonitorTask() {
     while (true) {
         Thread.sleep(HEARTBEAT_INTERVAL);
@@ -205,6 +208,7 @@ The client regularly checks if its connection to the server is still working by 
 
 **Connection Health Check:**
 ```java
+// 553 (in Client)
 private boolean isConnectionHealthy() {
     return socket != null &&
            !socket.isClosed() &&
@@ -222,6 +226,8 @@ When the internet connection drops, the client doesn't just crash - it remembers
 When connection is lost, the client automatically attempts to reconnect:
 
 ```java
+
+// 205 (in Client)
 private void handleConnectionLoss() {
     // Save current state
     String lastRoom = currentRoom;
@@ -253,7 +259,7 @@ Instead of making users log in every time they reconnect, the server gives each 
 
 **Token-Based Sessions:**
 ```java
-// Server creates secure session tokens
+// Server creates secure session tokens - 759 (in Server)
 private String createUserToken(String username) {
     byte[] tokenBytes = new byte[48];
     SecureRandom.getInstanceStrong().nextBytes(tokenBytes);
@@ -266,7 +272,7 @@ private String createUserToken(String username) {
     return token;
 }
 
-// Client stores and reuses tokens
+// Client stores and reuses tokens - 291 (in Client)
 private void authenticate() {
     String token = tokens.getProperty(username);
     if (token != null) {
@@ -290,9 +296,10 @@ The server uses virtual threads (lightweight threads) to handle thousands of use
 - **Per-Connection Threads**: Each user gets their own dedicated thread that handles all their chat activities like sending messages, joining rooms, and authentication without interfering with other users.
 
 ```java
-// Every accepted client gets its own virtual thread
+// Every accepted client gets its own virtual thread - 340 (in Server)
 Thread.startVirtualThread(() -> handleClient(client, clientIp));
 
+// 475 (in Server)
 private void handleClient(Socket sock, String clientIp) {
     // This entire method runs in the client's dedicated thread
     // Authentication, message handling, room management all happen here
@@ -305,7 +312,7 @@ private void handleClient(Socket sock, String clientIp) {
 - **Background Threads**: The server runs several "housekeeping" threads that clean up expired sessions, monitor connection health, and generate AI responses without blocking the main chat functionality.
 
 ```java
-// These background tasks run independently
+// These background tasks run independently .- 319 (in Server)
 Thread.startVirtualThread(this::sessionCleanupTask);     // Removes old sessions
 Thread.startVirtualThread(this::heartbeatMonitorTask);   // Checks if users are still connected
 Thread.startVirtualThread(this::connectionCleanupTask);  // Manages connection limits
@@ -321,7 +328,7 @@ Read-write locks allow multiple users to safely access shared data like user lis
 
 **Thread-Safe Operations:**
 ```java
-// Read-write locks for performance
+// Read-write locks for performance - 80 (in Server)
 private final ReadWriteLock globalLock = new ReentrantReadWriteLock();
 
 // Multiple users can read simultaneously
